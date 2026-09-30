@@ -16,6 +16,7 @@ from functools import cache
 from typing import ClassVar
 
 from .family import Family
+from .handler_declarations import BuiltinHandlerDeclarations
 
 
 class Headline:
@@ -29,6 +30,10 @@ class Measure(Family, ABC, root=True):
     @classmethod
     @abstractmethod
     def count(cls, node: ast.AST) -> int: ...
+
+    @classmethod
+    def admits(cls, path: str) -> bool:
+        return True
 
 
 class PatternMeasure(Measure, abstract=True):
@@ -215,6 +220,20 @@ class StringDispatchArms(DispatchArmCount, StringDispatch):
 
 class TypeSwitchArms(DispatchArmCount, TypeSwitch):
     """Distinct type arms in the type-switch candidates."""
+
+
+class BuiltinHandlerTypeSwitch(BuiltinHandlerDeclarations, TypeSwitch):
+    """Primitive MroDispatch arms outside the codec, even one per method.
+
+    Splitting a primitive switch into decorated methods is counted arm by arm.
+    AST/domain handlers are a different taxonomy. See the shared collector's
+    screening scope; this count does not prove native execution ownership.
+    """
+    node_types = (ast.Module,)
+
+    @classmethod
+    def count(cls, node: ast.AST) -> int:
+        return cls.count_module(node)
 
 
 class StringKeySubscript(PatternMeasure, Headline):
@@ -459,7 +478,8 @@ def measure_source(path: str, text: str) -> ParseOutcome:
     tally = Tally(code_lines=lines)
     for node in ast.walk(tree):
         for measure in dispatch.get(type(node), ()):
-            tally.counts[measure] += measure.count(node)
+            if measure.admits(path):
+                tally.counts[measure] += measure.count(node)
     return Measured(path, lines, tally)
 
 

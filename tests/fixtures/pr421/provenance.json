@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/OpenHCSDev/agent-comms",
+  "pull_request": 421,
+  "sources": {
+    "before": {
+      "revision": "000a31c562b6d048e26e288b24fcd3f1ac64f803",
+      "path": "src/agent_comms/acp_failure.py",
+      "sha256": "7c77b28e1b6fdfb8c7eaab19c7a94778af670536352d6258de61c767d1d29429"
+    },
+    "after": {
+      "revision": "0b3a965a9d3bfb531d0e7aa02878c0468429f23b",
+      "path": "src/agent_comms/acp_failure.py",
+      "sha256": "0a6c76c1e0b25b86189e8a04e1aa6e0ec977332f0018fc4a830a41d21d64eaac"
+    }
+  }
+}

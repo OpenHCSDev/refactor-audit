@@ -5,6 +5,8 @@ Run with: python -m unittest discover -s skills/refactor-audit/tests -v
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -17,7 +19,8 @@ sys.path.insert(0, str(SCRIPTS))
 
 from audit.chain_terms import ChainProfile
 from audit.measures import (
-    Measured, StringDispatch, StringDispatchArms, TypeSwitch, TypeSwitchArms, measure_source,
+    BuiltinHandlerTypeSwitch, Measured, StringDispatch, StringDispatchArms, TypeSwitch,
+    TypeSwitchArms, measure_source,
 )
 from audit.repository import Repository
 from merge_review import MergeReview
@@ -30,6 +33,50 @@ def source_for(cases: int, *, type_switch: bool = False) -> str:
 
 
 class AuditRegressions(unittest.TestCase):
+    def test_builtin_handler_family_tracks_real_421_growth_and_boundary(self):
+        fixture = Path(__file__).parent / "fixtures" / "pr421"
+        provenance = json.loads((fixture / "provenance.json").read_text())
+        tallies = []
+        for state in ("before", "after"):
+            source = (fixture / f"{state}.py").read_bytes()
+            self.assertEqual(hashlib.sha256(source).hexdigest(),
+                             provenance["sources"][state]["sha256"])
+            measured = measure_source(provenance["sources"][state]["path"], source.decode())
+            self.assertIsInstance(measured, Measured)
+            tallies.append(measured.tally)
+        self.assertEqual([t[BuiltinHandlerTypeSwitch] for t in tallies], [0, 6])
+        self.assertEqual((tallies[1] - tallies[0])[BuiltinHandlerTypeSwitch], 6)
+
+        source = '''from .mro_dispatch import handles as cases, MroDispatch
+import builtins as native
+from builtins import list as Sequence
+class Decode(MroDispatch):
+    @cases(native.dict, Sequence, str, int, float, bool, tuple)
+    def primitive(self, value): pass
+    @cases(DomainRecord, ast.Dict)
+    async def domain(self, value): pass
+'''
+        for path, count in (("src/pkg/presentation.py", 7),
+                            ("src/pkg/field_codec.py", 0),
+                            ("src/pkg/presentation_codec.py", 7)):
+            with self.subTest(path=path):
+                self.assertEqual(measure_source(path, source).tally[BuiltinHandlerTypeSwitch], count)
+        shadowed = source.replace('class Decode', 'dict = DomainRecord\nclass Decode')
+        shadowed = shadowed.replace('native.dict', 'dict')
+        self.assertEqual(measure_source("source.py", shadowed).tally[BuiltinHandlerTypeSwitch], 6)
+        split = '''from .mro_dispatch import handles
+class Consumer(MroDispatch):
+    @handles(dict)
+    def one(self, value): pass
+    @handles(list)
+    def two(self, value): pass
+    @handles(str)
+    def three(self, value): pass
+'''
+        self.assertEqual(measure_source("source.py", split).tally[BuiltinHandlerTypeSwitch], 3)
+        self.assertEqual(measure_source("source.py", split.replace('@handles(str)', '@handles(tuple)')).tally[BuiltinHandlerTypeSwitch], 3)
+        self.assertEqual(measure_source("source.py", split.replace('@handles(str)', '@handles(str, tuple)')).tally[BuiltinHandlerTypeSwitch], 4)
+
     def test_dispatch_families_track_growth_removal_and_scope(self):
         for subjects, arms, is_type in ((StringDispatch, StringDispatchArms, False),
                                         (TypeSwitch, TypeSwitchArms, True)):
