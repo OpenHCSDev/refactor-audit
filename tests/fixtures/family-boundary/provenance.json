@@ -1,0 +1,28 @@
+{
+  "repository": "https://github.com/OpenHCSDev/agent-comms",
+  "commit": "c4ceec4243ebd925a51ce80222ef8bb2e32a59c8",
+  "path": "src/agent_comms/pi_events.py",
+  "class": "CompactionProgress",
+  "sources": {
+    "before": {
+      "revision": "480d6f0e443a6041e3f7b1fb72bca0844be2d4d7",
+      "path": "src/agent_comms/pi_events.py",
+      "file_sha256": "ca1fe414f41a2ebbf6d9bdc7069ed676d99ed2373e87ee1ead5eee8d9924b907",
+      "fragment_sha256": "fae74af1d486176fedc89da431a7e8b049a5d609530cdb10d552dc25190888dd",
+      "start_line": 234,
+      "end_line": 263,
+      "file_count": 4,
+      "fragment_count": 0
+    },
+    "after": {
+      "revision": "c4ceec4243ebd925a51ce80222ef8bb2e32a59c8",
+      "path": "src/agent_comms/pi_events.py",
+      "file_sha256": "30d772285c423822b99ca99a31a2532dc336496fded38ac7cec316e2291e4b05",
+      "fragment_sha256": "4efea5f5507528388a64d97524e88ab118ad671d0f347cf4c8d9f33cf92290c9",
+      "start_line": 234,
+      "end_line": 256,
+      "file_count": 5,
+      "fragment_count": 1
+    }
+  }
+}

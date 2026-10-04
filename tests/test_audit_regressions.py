@@ -19,7 +19,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from audit.chain_terms import ChainProfile
 from audit.measures import (
-    BuiltinHandlerTypeSwitch, Measured, StringDispatch, StringDispatchArms, TypeSwitch,
+    BuiltinHandlerTypeSwitch, FamilyFlattened, Measured, StringDispatch, StringDispatchArms, TypeSwitch,
     TypeSwitchArms, measure_source,
 )
 from audit.repository import Repository
@@ -33,6 +33,34 @@ def source_for(cases: int, *, type_switch: bool = False) -> str:
 
 
 class AuditRegressions(unittest.TestCase):
+    def test_family_boundary_tracks_real_event_growth_and_member_transport(self):
+        fixture = Path(__file__).parent / "fixtures" / "family-boundary"
+        provenance = json.loads((fixture / "provenance.json").read_text())
+        tallies = []
+        for state in ("before", "after"):
+            source = (fixture / f"{state}.py").read_bytes()
+            self.assertEqual(hashlib.sha256(source).hexdigest(),
+                             provenance["sources"][state]["fragment_sha256"])
+            outcome = measure_source(provenance["path"], source.decode())
+            self.assertIsInstance(outcome, Measured)
+            tallies.append(outcome.tally)
+        self.assertEqual([t[FamilyFlattened] for t in tallies], [0, 1])
+        self.assertEqual((tallies[1] - tallies[0])[FamilyFlattened], 1)
+        self.assertEqual((tallies[0] - tallies[1])[FamilyFlattened], -1)
+        self.assertEqual(tallies[1].as_record()["family_flattened"], 1)
+
+        for body, count in (
+            ("emit(member.declared_name)", 1),
+            ("emit(member, phase=member.family_name)", 1),
+            ("return member.declared_name or other.family_name", 2),
+            ("return (member.declared_name, other.family_name)", 2),
+            ('emit(f"{member.declared_name}")', 0),
+            ("emit(member); return member", 0),
+        ):
+            with self.subTest(body=body):
+                source = "def carry(member, other):\n    " + body + "\n"
+                self.assertEqual(measure_source("source.py", source).tally[FamilyFlattened], count)
+
     def test_builtin_handler_family_tracks_real_421_growth_and_boundary(self):
         fixture = Path(__file__).parent / "fixtures" / "pr421"
         provenance = json.loads((fixture / "provenance.json").read_text())
