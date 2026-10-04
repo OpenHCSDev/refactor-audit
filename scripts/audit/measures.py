@@ -236,6 +236,36 @@ class BuiltinHandlerTypeSwitch(BuiltinHandlerDeclarations, TypeSwitch):
         return cls.count_module(node)
 
 
+class FamilyFlattened(Measure):
+    """A family member's own name used as the value that crosses a boundary (BOUND-8).
+
+    ``x.declared_name`` passed into a call, returned, or chosen with ``or``: the member
+    leaves as a string, so every consumer must decide its meaning again, and the string
+    can carry values the family does not have. Display text (f-strings) is not counted.
+    """
+    node_types = (ast.Call, ast.Return)
+    weight = 3
+    names: ClassVar[frozenset[str]] = frozenset({"declared_name", "family_name"})
+
+    @classmethod
+    def _flattened(cls, node: ast.AST | None) -> int:
+        match node:
+            case ast.Attribute(attr=attr) if attr in cls.names:
+                return 1
+            case ast.BoolOp(values=values) | ast.Tuple(elts=values):
+                return sum(cls._flattened(v) for v in values)
+        return 0
+
+    @classmethod
+    def count(cls, node: ast.AST) -> int:
+        match node:
+            case ast.Call(args=args, keywords=keywords):
+                return sum(cls._flattened(a) for a in args) + sum(cls._flattened(k.value) for k in keywords)
+            case ast.Return(value=value):
+                return cls._flattened(value)
+        return 0
+
+
 class StringKeySubscript(PatternMeasure, Headline):
     weight = 1
     node_types = (ast.Subscript,)

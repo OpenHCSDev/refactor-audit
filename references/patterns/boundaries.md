@@ -4,7 +4,7 @@ Data crossing a boundary (a socket, a file, a database row, a subprocess's outpu
 
 ## Contents
 
-BOUND-1 Raw data read at every use, and re-validated · BOUND-2 Bypassing the class that already models the data · BOUND-3 Hand-written exact key sets · BOUND-4 Structure flattened to text, then parsed back · BOUND-5 Code embedded in strings · BOUND-6 Configuration read by string path, typed at the call site · BOUND-7 Access by attribute name
+BOUND-1 Raw data read at every use, and re-validated · BOUND-2 Bypassing the class that already models the data · BOUND-3 Hand-written exact key sets · BOUND-4 Structure flattened to text, then parsed back · BOUND-5 Code embedded in strings · BOUND-6 Configuration read by string path, typed at the call site · BOUND-7 Access by attribute name · BOUND-8 An owned fact flattened at its own boundary
 
 ---
 
@@ -180,3 +180,17 @@ def open_thread(target: HasSession) -> None: ...          # the requirement is d
 For external structures such as Python's own AST, destructure with `match` on the real classes (`case ast.Call(func=ast.Name(id="type"))`) instead of probing attributes.
 **What collapses:** the probing, the defaults, and the mystery of which shapes flow where.
 **Detected by:** the census's `attr_by_name` and `getattr_default`.
+
+---
+
+## BOUND-8 An owned fact flattened at its own boundary
+
+**Shape:** a family owns a fact with behaviour, but the event, record or return value that carries the fact out of its module holds the member's name as a string, or restates its capabilities as booleans. Every consumer decides again what the string means, each slightly differently, and the string can carry values the family doesn't have.
+
+**Specimen** (agent-comms, October 2026): `TurnPhase` is a declared family whose members own `busy`, `accepts_prompt`, `can_compact`. The turn-state event carried `phase: str` (built from `self.phase.declared_name`) and three booleans for one fact (`retryable`, `replay_safe`, `side_effects_possible`), derived inconsistently. Four call sites emitted `phase="shutdown"`, which was never a member. Even the family's own `stalled()` returned `(reason, declared_name)`. The native-lifecycle area took 21 fix PRs in five days, each consumer re-deciding the phase.
+
+**What the code makes you know:** that `"model_wait"` means `ModelWaitPhase` and what it allows, at every consumer, and which combinations of the three booleans are possible.
+
+**Fix:** the carrier holds the member itself (`phase: TurnPhase`), encoded by the codec as a tagged object and decoded back into the member on the other side; a fact spread over several booleans becomes one ordered family whose members own them as properties (`TurnExposure`: unexposed, output, effect). Missing members surface immediately (`ShutdownPhase`). Consumers ask the member, never compare names.
+
+**Detect:** the census measure `family_flattened` counts `.declared_name` or `.family_name` passed into a call, returned, or chosen with `or`. Triage each site: codec and schema modules that generate wire or SQL forms from a family are the mechanism, not the pattern.

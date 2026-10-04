@@ -39,6 +39,7 @@ Two further groups cut across the rungs: **boundaries** (raw data handled everyw
 | `isinstance_switch` | IMPL-3, IMPL-4 | IMPL-9 when a `kind` field accompanies it |
 | census `string_dispatch`, `type_switch` and their `_arms` measures (per function) | IMPL-1, IMPL-2, IMPL-3, IMPL-4 | subjects count candidates with at least three distinct arms; `_arms` also catches growth of existing candidates. Decide per site whether the taxonomy is external or a missing family. Counts do not catch subthreshold cases or additions offset by removals; admitted ownership needs site-specific guards |
 | census `builtin_handler_type_switch` | IMPL-3, BOUND-1 | primitive MroDispatch `handles` arms count individually outside the canonical codec, including one per method. AST/domain handlers are not primitive cases; this is screening, not a dynamic import/execution proof |
+| census `family_flattened` | BOUND-8 | codec and schema modules that generate wire or SQL forms from a family are the mechanism; everything else is a member leaving its owner as a string |
 | `raw_shape` marked BYPASSES | BOUND-2 | MEMB-5 when the subject is a database row |
 | `raw_shape` marked HAND-MAPPED | MEMB-5 | read what the target class is: a decoder, or a presentation type restating the wire |
 | `raw_shape` unmodeled | BOUND-1 | BOUND-3 nearby; IDEN-5 if keys join two stores |
@@ -100,6 +101,7 @@ Two further groups cut across the rungs: **boundaries** (raw data handled everyw
 - BOUND-5 Code embedded in strings
 - BOUND-6 Configuration read by string path, typed at the call site
 - BOUND-7 Access by attribute name
+- BOUND-8 An owned fact flattened at its own boundary
 
 **Duplication over time** ([over-time.md](over-time.md))
 - TIME-1 A legacy path beside its replacement
