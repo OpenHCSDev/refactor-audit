@@ -19,7 +19,8 @@ sys.path.insert(0, str(SCRIPTS))
 
 from audit.chain_terms import ChainProfile
 from audit.measures import (
-    BuiltinHandlerTypeSwitch, FamilyFlattened, Measured, StringDispatch, StringDispatchArms, TypeSwitch,
+    BuiltinHandlerTypeSwitch, FamilyFlattened, ForeignAbsenceProbe, ForeignNegation,
+    Measured, StringDispatch, StringDispatchArms, TypeSwitch,
     TypeSwitchArms, measure_source,
 )
 from audit.repository import Repository
@@ -33,6 +34,25 @@ def source_for(cases: int, *, type_switch: bool = False) -> str:
 
 
 class AuditRegressions(unittest.TestCase):
+    def test_negation_is_not_absence_and_explicit_probes_remain_visible(self):
+        measured = measure_source("editing.py", """
+class EditingMode:
+    accepts_text = True
+def read(editor, unknown):
+    return (not editor.editing_mode.accepts_text, not unknown.flag,
+            editor.value is None, editor.value is not None)
+""")
+        self.assertIsInstance(measured, Measured)
+        self.assertEqual(measured.tally[ForeignAbsenceProbe], 2)
+        self.assertEqual(measured.tally[ForeignNegation], 2)
+        self.assertEqual(ForeignNegation.weight, 0)
+        for expression in ("not editor.editing_mode.accepts_text", "not unknown.flag"):
+            with self.subTest(expression=expression):
+                self.assertIsNone(ForeignAbsenceProbe.attribute(ast.parse(expression, mode="eval").body))
+        own = measure_source("owned.py", "def read(self):\n    return not self.flag, self.value is None\n")
+        self.assertEqual(own.tally[ForeignAbsenceProbe], 0)
+        self.assertEqual(own.tally[ForeignNegation], 0)
+
     def test_family_boundary_tracks_real_event_growth_and_member_transport(self):
         fixture = Path(__file__).parent / "fixtures" / "family-boundary"
         provenance = json.loads((fixture / "provenance.json").read_text())

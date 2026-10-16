@@ -99,20 +99,48 @@ class CodecSubclass(PatternMeasure):
         return False
 
 
-class ForeignAbsenceProbe(Measure):
-    """`other.attr is None` and `not other.attr`: code outside an object probing its absent state
-    (IDEN-3). The owner should report that state itself; each probe is its state, restated."""
-    node_types = (ast.Compare, ast.UnaryOp)
-    weight = 1
+class ForeignAbsenceSyntax:
+    """Select explicit None comparisons; truth-value negation does not prove absence."""
+
+    @staticmethod
+    def attribute(node: ast.AST) -> ast.Attribute | None:
+        match node:
+            case ast.Compare(left=ast.Attribute() as attribute, ops=[ast.Is() | ast.IsNot()], comparators=[ast.Constant(value=None)]):
+                return attribute
+        return None
+
+
+class ForeignNegationSyntax:
+    """Select negated attributes without claiming what their truth value means."""
+
+    @staticmethod
+    def attribute(node: ast.AST) -> ast.Attribute | None:
+        match node:
+            case ast.UnaryOp(op=ast.Not(), operand=ast.Attribute() as attribute):
+                return attribute
+        return None
+
+
+class ForeignAttributeProbe(Measure, abstract=True):
+    @staticmethod
+    @abstractmethod
+    def attribute(node: ast.AST) -> ast.Attribute | None: ...
 
     @classmethod
     def count(cls, node: ast.AST) -> int:
-        match node:
-            case ast.Compare(left=ast.Attribute(value=owner), ops=[ast.Is() | ast.IsNot()], comparators=[ast.Constant(value=None)]):
-                return int(not _is_self(owner))
-            case ast.UnaryOp(op=ast.Not(), operand=ast.Attribute(value=owner)):
-                return int(not _is_self(owner))
-        return 0
+        attribute = cls.attribute(node)
+        return int(attribute is not None and not _is_self(attribute.value))
+
+
+class ForeignAbsenceProbe(ForeignAbsenceSyntax, ForeignAttributeProbe):
+    """Explicit foreign None comparisons (IDEN-3), not boolean negation."""
+    node_types = (ast.Compare,)
+    weight = 1
+
+
+class ForeignNegation(ForeignNegationSyntax, ForeignAttributeProbe):
+    """Unresolved truth-value syntax is a reading lead, not ranked absence debt."""
+    node_types = (ast.UnaryOp,)
 
 
 def _is_self(node: ast.expr) -> bool:

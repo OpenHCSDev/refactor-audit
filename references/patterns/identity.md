@@ -100,7 +100,7 @@ attention = any(s.needs_attention for s in sources.values())
 ```
 
 **What collapses:** the three encodings, the branching, and the per-source text.
-**Detected by:** the census's `foreign_absence_probe`: `other.attr is None` and `not other.attr`, code outside an object probing its absent state. Measure the reader, not the declaration. In the Toad fork, the refactor cut optional fields and attributes (−34 and −19 in a day) while `None` checks rose by 75; probes of other objects rose by 81, in the new modules reading another object's state from outside (one checked 18 of a conversation's fields, private ones included). Guard: the ratchet's probe count never increases in a touched file.
+**Detected by:** the census's `foreign_absence_probe` selects explicit `other.attr is None` / `is not None`. Boolean negation alone does not establish absence; `foreign_negation` retains it as an unranked reading lead. Inspect the determining owner before calling syntax a competing state decision. In the Toad fork, the refactor cut optional fields and attributes (−34 and −19 in a day) while `None` checks rose by 75; probes of other objects rose by 81, in the new modules reading another object's state from outside (one checked 18 of a conversation's fields, private ones included). Core's per-file absence ratchet does not reject ordinary boolean negation.
 
 ---
 
