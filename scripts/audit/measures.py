@@ -322,12 +322,12 @@ class FamilyFlattened(Measure):
         for item in nodes:
             if isinstance(item, (ast.Import, ast.ImportFrom)):
                 writes.update(alias.asname or alias.name.split('.')[0] for alias in item.names)
-        strings = set()
+        strings = {}
         for statement in node.body:
             match statement:
-                case ast.Assign(targets=[ast.Name(id=name)], value=ast.Constant(value=str())) | ast.AnnAssign(target=ast.Name(id=name), value=ast.Constant(value=str())):
+                case ast.Assign(targets=[ast.Name(id=name)], value=ast.Constant(value=str() as value)) | ast.AnnAssign(target=ast.Name(id=name), value=ast.Constant(value=str() as value)):
                     if writes[name] == 1:
-                        strings.add(name)
+                        strings[name] = value
         properties = {"property"} if not writes["property"] else set()
         builtins = set()
         for statement in node.body:
@@ -341,9 +341,12 @@ class FamilyFlattened(Measure):
                       if isinstance(item, ast.FunctionDef)
                       and (returned := cls.identity_return(item, properties, builtins)) is not None}
 
-        def string_value(value: ast.AST) -> bool:
-            return (isinstance(value, ast.Constant) and isinstance(value.value, str)
-                    or isinstance(value, ast.Name) and value.id in strings)
+        def string_value(value: ast.AST) -> str | None:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                return value.value
+            if isinstance(value, ast.Name) and value.id in strings:
+                return strings[value.id]
+            return None
 
         found = []
         for item in nodes:
@@ -354,10 +357,12 @@ class FamilyFlattened(Measure):
                     found.extend([item] * cls._flattened(value))
                 case ast.Compare(left=left, ops=operators, comparators=rights):
                     for operator, right in zip(operators, rights, strict=True):
-                        if isinstance(operator, (ast.Eq, ast.NotEq)) and (
-                            string_value(left) or string_value(right)
-                            or cls._flattened(left) or cls._flattened(right)
-                        ):
+                        left_string, right_string = string_value(left), string_value(right)
+                        # Presence validation and comparisons of two known values
+                        # do not choose a named behavior for a dynamic subject.
+                        if (isinstance(operator, (ast.Eq, ast.NotEq))
+                                and left_string != "" and right_string != ""
+                                and ((left_string is None) != (right_string is None))):
                             found.append(item)
                         left = right
         return tuple(found)

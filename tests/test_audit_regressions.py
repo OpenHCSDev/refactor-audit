@@ -117,6 +117,8 @@ def execute(call):
                 self.assertEqual(len(sites), 1)
                 self.assertIsInstance(sites[0], ast.Compare)
                 self.assertEqual(measure_source("arbitrary.py", compared).tally[FamilyFlattened], 1)
+                literal = compared.replace("call.name == SEND_TOOL", 'call.name == "comms_send"')
+                self.assertEqual(measure_source("arbitrary.py", literal).tally[FamilyFlattened], 1)
 
     def test_projection_admission_does_not_hide_other_name_transport(self):
         for body, expected in (("return this.tool.declared_name", 0),
@@ -133,6 +135,13 @@ def execute(call):
         self.assertEqual(measure_source("arbitrary.py", local).tally[FamilyFlattened], 0)
         numeric = 'LIMIT = 10\ndef read(value):\n    return value == LIMIT\n'
         self.assertEqual(measure_source("arbitrary.py", numeric).tally[FamilyFlattened], 0)
+        for expression in ('namespace["declared_name"] == ""',
+                           'value.declared_name == ""',
+                           'value.name != expected_name',
+                           'SEND_TOOL == "comms_send"'):
+            with self.subTest(validation=expression):
+                source = 'SEND_TOOL = "comms_send"\ndef validate(value, namespace, expected_name):\n    return ' + expression + '\n'
+                self.assertEqual(measure_source("arbitrary.py", source).tally[FamilyFlattened], 0)
 
     def test_builtin_handler_family_tracks_real_421_growth_and_boundary(self):
         fixture = Path(__file__).parent / "fixtures" / "pr421"
