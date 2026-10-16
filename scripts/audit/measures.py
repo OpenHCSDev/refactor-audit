@@ -265,13 +265,14 @@ class BuiltinHandlerTypeSwitch(BuiltinHandlerDeclarations, TypeSwitch):
 
 
 class FamilyFlattened(Measure):
-    """A family member's own name used as the value that crosses a boundary (BOUND-8).
+    """Screen name transport and string redispatch, not declaration-owned identity.
 
-    ``x.declared_name`` passed into a call, returned, or chosen with ``or``: the member
-    leaves as a string, so every consumer must decide its meaning again, and the string
-    can carry values the family does not have. Display text (f-strings) is not counted.
+    A pure property projecting its receiver's declaration name supplies identity,
+    not behavior. Consumers comparing strings to choose behavior are still sites.
+    Module context distinguishes those roles and admits unique literal bindings;
+    dynamic/imported values remain outside this syntactic collector's proof scope.
     """
-    node_types = (ast.Call, ast.Return)
+    node_types = (ast.Module,)
     weight = 3
     names: ClassVar[frozenset[str]] = frozenset({"declared_name", "family_name"})
 
@@ -285,13 +286,85 @@ class FamilyFlattened(Measure):
         return 0
 
     @classmethod
+    def identity_return(cls, function: ast.FunctionDef, properties: set[str], builtins: set[str]) -> ast.Return | None:
+        if len(function.decorator_list) != 1:
+            return None
+        decorator = function.decorator_list[0]
+        if not (isinstance(decorator, ast.Name) and decorator.id in properties
+                or isinstance(decorator, ast.Attribute) and decorator.attr == "property"
+                and isinstance(decorator.value, ast.Name) and decorator.value.id in builtins):
+            return None
+        parameters = (*function.args.posonlyargs, *function.args.args)
+        body = function.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+            body = body[1:]
+        if len(parameters) != 1 or len(body) != 1 or not isinstance(body[0], ast.Return):
+            return None
+        value = body[0].value
+        if not isinstance(value, ast.Attribute) or value.attr not in cls.names:
+            return None
+        owner = value.value
+        while isinstance(owner, ast.Attribute):
+            owner = owner.value
+        return body[0] if isinstance(owner, ast.Name) and owner.id == parameters[0].arg else None
+
+    @classmethod
+    def occurrences(cls, node: ast.AST) -> tuple[ast.AST, ...]:
+        if not isinstance(node, ast.Module):
+            return ()
+        nodes = tuple(ast.walk(node))
+        # Only unique, literal module declarations are admitted as string values.
+        # Writes/parameters/imports in any scope conservatively keep a name open.
+        writes = collections.Counter(item.id for item in nodes
+                                     if isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del)))
+        writes.update(item.arg for item in nodes if isinstance(item, ast.arg))
+        writes.update(item.name for item in nodes if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
+        for item in nodes:
+            if isinstance(item, (ast.Import, ast.ImportFrom)):
+                writes.update(alias.asname or alias.name.split('.')[0] for alias in item.names)
+        strings = set()
+        for statement in node.body:
+            match statement:
+                case ast.Assign(targets=[ast.Name(id=name)], value=ast.Constant(value=str())) | ast.AnnAssign(target=ast.Name(id=name), value=ast.Constant(value=str())):
+                    if writes[name] == 1:
+                        strings.add(name)
+        properties = {"property"} if not writes["property"] else set()
+        builtins = set()
+        for statement in node.body:
+            if isinstance(statement, ast.ImportFrom) and statement.module == "builtins":
+                properties.update(alias.asname or alias.name for alias in statement.names
+                                  if alias.name == "property" and writes[alias.asname or alias.name] == 1)
+            elif isinstance(statement, ast.Import):
+                builtins.update(alias.asname or alias.name for alias in statement.names
+                                if alias.name == "builtins" and writes[alias.asname or alias.name] == 1)
+        identities = {returned for item in nodes
+                      if isinstance(item, ast.FunctionDef)
+                      and (returned := cls.identity_return(item, properties, builtins)) is not None}
+
+        def string_value(value: ast.AST) -> bool:
+            return (isinstance(value, ast.Constant) and isinstance(value.value, str)
+                    or isinstance(value, ast.Name) and value.id in strings)
+
+        found = []
+        for item in nodes:
+            match item:
+                case ast.Call(args=args, keywords=keywords):
+                    found.extend([item] * (sum(cls._flattened(a) for a in args) + sum(cls._flattened(k.value) for k in keywords)))
+                case ast.Return(value=value) if item not in identities:
+                    found.extend([item] * cls._flattened(value))
+                case ast.Compare(left=left, ops=operators, comparators=rights):
+                    for operator, right in zip(operators, rights, strict=True):
+                        if isinstance(operator, (ast.Eq, ast.NotEq)) and (
+                            string_value(left) or string_value(right)
+                            or cls._flattened(left) or cls._flattened(right)
+                        ):
+                            found.append(item)
+                        left = right
+        return tuple(found)
+
+    @classmethod
     def count(cls, node: ast.AST) -> int:
-        match node:
-            case ast.Call(args=args, keywords=keywords):
-                return sum(cls._flattened(a) for a in args) + sum(cls._flattened(k.value) for k in keywords)
-            case ast.Return(value=value):
-                return cls._flattened(value)
-        return 0
+        return len(cls.occurrences(node))
 
 
 class StringKeySubscript(PatternMeasure, Headline):

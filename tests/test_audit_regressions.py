@@ -81,6 +81,59 @@ def read(editor, unknown):
                 source = "def carry(member, other):\n    " + body + "\n"
                 self.assertEqual(measure_source("source.py", source).tally[FamilyFlattened], count)
 
+    def test_family_identity_and_selector_from_real_history(self):
+        fixture = Path(__file__).parent / "fixtures" / "wire-identity"
+        provenance = json.loads((fixture / "provenance.json").read_text())
+        for case in provenance["cases"]:
+            with self.subTest(revision=case["revision"], owner=case["class"]):
+                source = (fixture / case["fixture"]).read_text()
+                self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), case["sha256"])
+                measured = measure_source(case["path"], source)
+                self.assertEqual(measured.tally[FamilyFlattened], case["expected"])
+                if case["fixture"] == "send-selector.py":
+                    sites = FamilyFlattened.occurrences(ast.parse(source))
+                    self.assertEqual([ast.unparse(site) for site in sites], ["self.name == SEND_TOOL"])
+
+    def test_identity_projection_is_not_string_redispatch(self):
+        for header, decorator in (("", "property"),
+                                  ("from builtins import property as identity", "identity"),
+                                  ("import builtins as native", "native.property")):
+            source = header + f'''
+SEND_TOOL = "comms_send"
+class CodingCall:
+    @{decorator}
+    def name(this) -> str:
+        """Wire identity derived from the original declaration."""
+        return this.tool.declared_name
+'''
+            with self.subTest(decorator=decorator):
+                self.assertEqual(measure_source("arbitrary.py", source).tally[FamilyFlattened], 0)
+                compared = source + '''
+def execute(call):
+    if call.name == SEND_TOOL:
+        return "special behavior"
+'''
+                sites = FamilyFlattened.occurrences(ast.parse(compared))
+                self.assertEqual(len(sites), 1)
+                self.assertIsInstance(sites[0], ast.Compare)
+                self.assertEqual(measure_source("arbitrary.py", compared).tally[FamilyFlattened], 1)
+
+    def test_projection_admission_does_not_hide_other_name_transport(self):
+        for body, expected in (("return this.tool.declared_name", 0),
+                               ("return this.tool.declared_name or fallback", 1),
+                               ("return (this.tool.declared_name,)", 1),
+                               ("return other.declared_name", 1),
+                               ("emit(this.tool.declared_name)\\n        return this.tool.declared_name", 2)):
+            with self.subTest(body=body):
+                source = "class Call:\n    @property\n    def name(this):\n        " + body.replace("\\n", "\n") + "\n"
+                self.assertEqual(measure_source("arbitrary.py", source).tally[FamilyFlattened], expected)
+        shadowed = "property = factory\nclass Call:\n    @property\n    def name(this):\n        return this.tool.declared_name\n"
+        self.assertEqual(measure_source("arbitrary.py", shadowed).tally[FamilyFlattened], 1)
+        local = 'SEND_TOOL = "comms_send"\ndef read(SEND_TOOL, value):\n    return value == SEND_TOOL\n'
+        self.assertEqual(measure_source("arbitrary.py", local).tally[FamilyFlattened], 0)
+        numeric = 'LIMIT = 10\ndef read(value):\n    return value == LIMIT\n'
+        self.assertEqual(measure_source("arbitrary.py", numeric).tally[FamilyFlattened], 0)
+
     def test_builtin_handler_family_tracks_real_421_growth_and_boundary(self):
         fixture = Path(__file__).parent / "fixtures" / "pr421"
         provenance = json.loads((fixture / "provenance.json").read_text())

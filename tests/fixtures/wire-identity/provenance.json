@@ -1,0 +1,32 @@
+{
+  "repository": "https://github.com/OpenHCSDev/agent-comms",
+  "cases": [
+    {
+      "fixture": "coding-before.py",
+      "revision": "32336fbbb6a3a667934e573e9da4e6beb9150517",
+      "path": "src/agent_comms/channel_coding_tools.py",
+      "class": "CodingCall",
+      "line": 39,
+      "sha256": "cee68934cbb83616f346fbb1aba020772137312a2f9c18cf8744efff9cbb18ea",
+      "expected": 0
+    },
+    {
+      "fixture": "coding-after.py",
+      "revision": "43ea3a9953fa4a2e6021631333ba3c2dcd7a346c",
+      "path": "src/agent_comms/channel_coding_tools.py",
+      "class": "CodingCall",
+      "line": 38,
+      "sha256": "c3298e7b57b4e560ba059cb7e6f9eab385cdfa100f29a66210efcf812c6ebb24",
+      "expected": 0
+    },
+    {
+      "fixture": "send-selector.py",
+      "revision": "43ea3a9953fa4a2e6021631333ba3c2dcd7a346c",
+      "path": "src/agent_comms/cli_bridges/codex_protocol.py",
+      "class": "SendOutputItem",
+      "line": 472,
+      "sha256": "1ea628dbde77d35244d8cdbd57924a646d23b7d8b92b2aed23d10d67478f1cb1",
+      "expected": 1
+    }
+  ]
+}
