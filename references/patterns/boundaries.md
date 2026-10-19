@@ -10,6 +10,8 @@ BOUND-1 Raw data read at every use, and re-validated · BOUND-2 Bypassing the cl
 
 ## BOUND-1 Raw data read at every use, and re-validated
 
+**Restates:** membership
+
 **Seen in:** agent-comms' feature modules: 79 record shapes read by three or more string keys; 249 `type()` checks, 168 of them on a value just taken out of a dict.
 
 ```python
@@ -40,6 +42,8 @@ result = FieldCodec.decode(ReopenResult, json.loads(stdout))   # strict: unknown
 
 ## BOUND-2 Bypassing the class that already models the data
 
+**Restates:** identity
+
 **Seen in:** agent-comms' private N/K stores; Toad's ACP agent.
 
 ```python
@@ -66,6 +70,8 @@ update = FieldCodec.decode(CoordinationUpdate, payload["coordination"])
 
 ## BOUND-3 Hand-written exact key sets
 
+**Restates:** membership
+
 **Seen in:** 31 checks in 21 agent-comms modules.
 
 ```python
@@ -81,6 +87,8 @@ if set(data) != {"sessionId", "sessionFile"}:
 ---
 
 ## BOUND-4 Structure flattened to text, then parsed back
+
+**Restates:** identity
 
 **Seen in:** Toad's status line.
 
@@ -103,6 +111,8 @@ class Presentation:
 ---
 
 ## BOUND-5 Code embedded in strings
+
+**Restates:** implementation
 
 **Seen in:** agent-comms' compaction: about 10,000 characters of JavaScript in Python strings, each helper's output parsed by hand.
 
@@ -137,6 +147,8 @@ class SourceSnapshotHelper(PiHelper[SnapshotRequest, SnapshotResult]):
 
 ## BOUND-6 Configuration read by string path, typed at the call site
 
+**Restates:** identity
+
 **Seen in:** Toad: 45 reads of 31 settings across 13 modules.
 
 ```python
@@ -159,6 +171,8 @@ if app.settings.tools.expand.should_expand(status): ...     # typed; a typo fail
 ---
 
 ## BOUND-7 Access by attribute name
+
+**Restates:** membership
 
 **Seen in:** the Toad fork: 69 `getattr`/`hasattr` calls with literal names, 27 `getattr(obj, name, default)` calls in `Conversation` alone. And in this skill's own first scripts (AGENT-8).
 
@@ -184,6 +198,8 @@ For external structures such as Python's own AST, destructure with `match` on th
 ---
 
 ## BOUND-8 An owned fact flattened at its own boundary
+
+**Restates:** identity
 
 **Shape:** a family owns a fact with behaviour, but the event, record or return value that carries the fact out of its module holds the member's name as a string, or restates its capabilities as booleans. Every consumer decides again what the string means, each slightly differently, and the string can carry values the family doesn't have.
 

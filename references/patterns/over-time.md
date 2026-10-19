@@ -10,6 +10,8 @@ TIME-1 A legacy path beside its replacement · TIME-2 Converters and key renames
 
 ## TIME-1 A legacy path beside its replacement
 
+**Restates:** implementation
+
 **Seen in:** agent-comms' publisher, input drain and cutover machinery.
 
 ```python
@@ -31,6 +33,8 @@ async def publish(self, message):
 
 ## TIME-2 Converters and key renames on load
 
+**Restates:** identity
+
 **Seen in:** agent-comms' registry and goals.
 
 ```python
@@ -49,6 +53,8 @@ status = raw.pop("status", None)                        # rebuild the new record
 ---
 
 ## TIME-3 Compatibility entry points, aliases and re-exports
+
+**Restates:** identity
 
 **Seen in:** Toad; a round-1 carve plan; named constructors kept for another repository.
 
@@ -70,6 +76,8 @@ from .model.threads import *     # an aggregator kept so 73 importers need not c
 
 ## TIME-4 Negotiation between your own components
 
+**Restates:** implementation
+
 **Seen in:** Toad and its MCP package.
 
 ```python
@@ -86,6 +94,8 @@ if POSITIVE_DECISIONS_CAPABILITY not in inventory.compatibility:
 ---
 
 ## TIME-5 A test switch in product code
+
+**Restates:** implementation
 
 **Seen in:** Toad's comms sidebar.
 
@@ -104,6 +114,8 @@ if target:
 
 ## TIME-6 Dead modules
 
+**Restates:** implementation
+
 **Seen in:** Toad: eight modules nothing imports, including an empty `toad/os.py` shadowing the standard library's `os`.
 
 **What the code makes you know:** whether each is used, which the reader cannot tell without searching.
@@ -114,6 +126,8 @@ if target:
 ---
 
 ## TIME-7 Copies of another component's defaults
+
+**Restates:** state
 
 **Seen in:** agent-comms' manual compaction.
 
@@ -130,6 +144,8 @@ SETTINGS = b'{"compaction":{"enabled":false,"reserveTokens":16384,"keepRecentTok
 ---
 
 ## TIME-8 Two declarations of one external format
+
+**Restates:** identity
 
 **Seen in:** agent-comms: pi's compaction settings declared by two classes, built by a dict literal, and rebuilt in two JavaScript helpers, six places in all.
 
@@ -164,6 +180,8 @@ class PiCompactionDecision:
 ---
 
 ## TIME-9 The adapter: the new type on top, the old shape underneath
+
+**Restates:** state
 
 **Seen in:** agent-comms. Asked to type a reserved input source, an agent produced typed records and then a codec subclass to keep writing the old flat dict:
 
