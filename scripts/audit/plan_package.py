@@ -195,6 +195,22 @@ class ConsistencyCheck(Check):
         return Failed(tuple(problems)) if problems else Passed()
 
 
+class HedgeCheck(Check):
+    """Disclaimers and self-demotion. Scope is stated once, in the README; every other claim
+    stands at its actual strength. Underclaiming is an error of the same class as overclaiming."""
+    hedges: ClassVar[re.Pattern] = re.compile(
+        r"\bprovisional\b|not (independently )?verified|\bunverified\b|do not (claim|interpret|label|treat)"
+        r"|not (yet )?(an? )?(admitted|proof|proven|established|validated|validation|result)\b"
+        r"|remains? (to be|open|unproven|unverified)|\btentative\b|should not be (read|interpreted|taken)"
+        r"|no (run|claim|result) (here )?(establishes|proves|implies)|cannot yet|it is possible that", re.I)
+
+    def run(self, package: PlanPackage) -> CheckResult:
+        lines = tuple(f"{d.name}:{n}: {line.strip()[:110]}"
+                      for d in package.documents if d.name != "README.md"
+                      for n, line in enumerate(d.text.splitlines(), 1) if self.hedges.search(line))
+        return NeedsReview(lines) if lines else Passed()
+
+
 class StyleCheck(Check):
     """Em dashes, which the owner's documents do not use."""
 

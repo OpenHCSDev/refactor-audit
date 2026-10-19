@@ -65,6 +65,10 @@ Some screening ratchets are codebase-wide from the first day: count candidate su
 
 ---
 
+## Writing
+
+State every claim at its actual strength. What exists and what does not is said once, in the README; after that, a design is written as the design, a finding with its evidence, and an unknown as a decision with a default. Repeated disclaimers and self-demotion ("provisional", "not independently verified", "do not claim this proves") are underclaiming, an error of the same class as overclaiming, and they bury the few statements that really are uncertain. The hedge check lists lines for review; it does not reject concrete uncertainty or evidence limits.
+
 ## Project specifics
 
 Fill in, or delete what does not apply:
