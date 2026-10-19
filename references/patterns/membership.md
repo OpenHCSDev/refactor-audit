@@ -10,6 +10,8 @@ MEMB-1 A roster restating a family · MEMB-2 A roster restating a capability · 
 
 ## MEMB-1 A roster restating a family
 
+**Restates:** membership
+
 **Seen in:** agent-comms' recovery gateway client; Toad's settings.
 
 ```python
@@ -37,6 +39,8 @@ status = ExecutionState.decode(payload.status)   # the family is the only list; 
 ---
 
 ## MEMB-2 A roster restating a capability
+
+**Restates:** membership
 
 **Seen in:** agent-comms' pi backend, ACP consumer and goal tool.
 
@@ -68,6 +72,8 @@ GoalAction.members_with(ModelInvocable)
 ---
 
 ## MEMB-3 Literal sets and special names spelled in many places
+
+**Restates:** membership
 
 **Seen in:** agent-comms' built-in channels; Toad's sidebars; a store's file name.
 
@@ -102,6 +108,8 @@ READ_LEDGER = LockedStore(root / "read_markers.json", ReadLedgerRecord)
 
 ## MEMB-4 Hand-written name strings
 
+**Restates:** membership
+
 **Seen in:** a first draft of state classes; export kinds; stored names.
 
 ```python
@@ -129,6 +137,8 @@ class MouseAnyEventMode(TerminalMode, declared_name="1003"): ... # an external s
 ---
 
 ## MEMB-5 One record's shape written four times
+
+**Restates:** membership
 
 **Seen in:** agent-comms' SQLite stores: 57 tables, 321 reads by column name, 34 positional inserts.
 

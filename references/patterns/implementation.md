@@ -10,6 +10,8 @@ IMPL-1 String dispatch on a kind · IMPL-2 Enum with no methods · IMPL-3 A `mat
 
 ## IMPL-1 String dispatch on a kind
 
+**Restates:** implementation
+
 **Seen in:** agent-comms' backend-to-ACP events: 15 kinds spelled in the producer and again in two consumers.
 
 ```python
@@ -68,6 +70,8 @@ class AgentEventConsumer(MroDispatch):
 
 ## IMPL-2 Enum with no methods, switched on everywhere
 
+**Restates:** implementation
+
 **Seen in:** agent-comms' coordination: 14 enums, none with a single method; `ExecutionStatus` switched on in 14 functions.
 
 ```python
@@ -108,6 +112,8 @@ Each state owns its behaviour and its data; consumers call methods on the state 
 ---
 
 ## IMPL-3 A `match` over types that already exist
+
+**Restates:** implementation
 
 **Seen in:** Toad's terminal emulator: twelve command types, applied by a 223-line `match` in `TerminalState`.
 
@@ -151,6 +157,8 @@ class ANSICursor(ANSICommand):
 
 ## IMPL-4 The half-finished family
 
+**Restates:** implementation
+
 **Seen in:** Toad's stream parser: five read types, two of which own `feed`; the parser handles all five with an `isinstance` switch.
 
 ```python
@@ -184,6 +192,8 @@ class StreamRead(ABC):
 ---
 
 ## IMPL-5 One dispatch written twice
+
+**Restates:** implementation
 
 **Seen in:** Toad's settings screen: the same seven-way dispatch on a setting's type in `compose` and in `schema_to_widget` (140 lines), with the integer and number branches each dispatching again on validation strings.
 
@@ -225,6 +235,8 @@ class NumberSetting(SettingKind[float], Bounded): ...
 
 ## IMPL-6 Effects decided centrally by key
 
+**Restates:** implementation
+
 **Seen in:** Toad's `app.py::setting_updated`, an 11-way `elif` on setting keys.
 
 ```python
@@ -255,6 +267,8 @@ class UiSettings(SettingsGroup):
 ---
 
 ## IMPL-7 A string action with a parameter bag
+
+**Restates:** implementation
 
 **Seen in:** agent-comms' `update_goal`: 296 lines, 15 parameters, dispatching on a string `action`; also `runtime.handle` (12 actions) and `cli.main` (27 commands).
 
@@ -296,6 +310,8 @@ class Pause(GoalAction, OwnerInvocable): ...     # the model cannot pause
 
 ## IMPL-8 The undeclared class: closures sharing `nonlocal` state
 
+**Restates:** implementation
+
 **Seen in:** agent-comms' `_stream_agent_events`: 1,560 lines, 19 parameters, 11 closures, about 45 local variables reassigned three or more times, nesting 23 deep.
 
 ```python
@@ -328,6 +344,8 @@ class TurnSession:
 ---
 
 ## IMPL-9 The longhand tagged union
+
+**Restates:** implementation
 
 **Seen in:** agent-comms' export limits and scopes; Toad's `Setting`.
 
@@ -372,6 +390,8 @@ class MaxBytesLimit(WireExportLimit):
 
 ## IMPL-10 Legality by runtime rejection
 
+**Restates:** implementation
+
 **Seen in:** agent-comms' coordination: about 47 `raise`s across five `__post_init__` methods, 25 of them in `RecoverySnapshot`.
 
 ```python
@@ -399,6 +419,8 @@ class Passive(ClaimState): ...      # no verdict field exists to be wrong
 ---
 
 ## IMPL-11 A transition table beside its states
+
+**Restates:** implementation
 
 **Seen in:** agent-comms' four `*_TRANSITIONS` dicts (139 lines) with inline rosters restating parts of them; Toad's goal toggle.
 
@@ -429,6 +451,8 @@ class Queued(ExecutionState):
 ---
 
 ## IMPL-12 One procedure copied, with drift
+
+**Restates:** implementation
 
 **Seen in:** agent-comms' turn settlement, written three times; the third copy skips a step.
 
@@ -462,6 +486,8 @@ class CommsAgent:
 ---
 
 ## IMPL-13 One mechanism at different levels of rigour
+
+**Restates:** implementation
 
 **Seen in:** agent-comms' child processes: eleven modules, from race-free `pidfd` and PID-namespace containment down to bare-PID signalling of long-lived owners.
 
@@ -498,6 +524,8 @@ class ProcessIdentity:
 ---
 
 ## IMPL-14 Validation as one anonymous boolean
+
+**Restates:** implementation
 
 **Seen in:** agent-comms: 109 conditions of six or more terms on `main`, the largest 23 terms. This one decides whether a reserved input source is still valid:
 
