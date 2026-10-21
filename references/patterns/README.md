@@ -73,7 +73,7 @@ Two further groups cut across the rungs: **boundaries** (raw data handled everyw
 - IMPL-10 Legality by runtime rejection
 - IMPL-11 A transition table beside its states
 - IMPL-12 One procedure copied, with drift
-- IMPL-13 One mechanism reimplemented at different levels of rigour
+- IMPL-13 One mechanism at different levels of rigour
 - IMPL-14 Validation as one anonymous boolean
 
 **Membership** ([membership.md](membership.md))
@@ -122,3 +122,4 @@ Two further groups cut across the rungs: **boundaries** (raw data handled everyw
 - AGENT-5 Copying the local idiom, including across repositories
 - AGENT-6 Relocation reported as factoring
 - AGENT-7 Holds, freezes and ceremony
+- AGENT-8 Treating tooling as exempt
