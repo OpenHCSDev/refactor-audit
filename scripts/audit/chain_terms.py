@@ -24,7 +24,6 @@ def _operand(term: ast.expr) -> ast.expr:
 
 
 class TermKind(Family, ABC, root=True, affix="Term"):
-    priority: ClassVar[int]
     pattern: ClassVar[str | None]
     clean_form: ClassVar[str]
 
@@ -35,11 +34,10 @@ class TermKind(Family, ABC, root=True, affix="Term"):
     @staticmethod
     def of(term: ast.expr) -> type["TermKind"]:
         target = _operand(term)
-        return next(kind for kind in sorted(TermKind.members(), key=lambda kind: kind.priority) if kind.matches(target))
+        return next(kind for kind in TermKind.members() if kind.matches(target))
 
 
 class TypeTerm(TermKind):
-    priority = 10
     pattern = "BOUND-1"
     clean_form = "decode once at the boundary into a type; the checks disappear"
 
@@ -62,7 +60,6 @@ def _rooted_at_self(node: ast.expr) -> bool:
 
 class AbsenceTerm(TermKind):
     """`x is None`, or the truthiness of another object's attribute: absence encoding a state."""
-    priority = 20
     pattern = "IDEN-3"
     clean_form = "the owner answers with one property or state; its optional and empty fields stop being probed"
 
@@ -78,7 +75,6 @@ class AbsenceTerm(TermKind):
 
 class FlagTerm(TermKind):
     """The truthiness of this object's own attribute: an implicit lifecycle kept as flags."""
-    priority = 25
     pattern = "IMPL-10"
     clean_form = "an explicit lifecycle state that answers the question; the flags go"
 
@@ -92,7 +88,6 @@ class FlagTerm(TermKind):
 
 class SameValueTerm(TermKind):
     """Two computed values compared: an identity or a captured snapshot, compared piece by piece."""
-    priority = 30
     pattern = "IDEN-1"
     clean_form = "one identity or snapshot value compared once (a == b); its parts stop being compared by hand"
 
@@ -106,7 +101,6 @@ class SameValueTerm(TermKind):
 
 class PredicateTerm(TermKind):
     """A predicate call: its declaration, not its spelling, determines ownership."""
-    priority = 40
     pattern = None
     clean_form = "inspect the predicate declarations; existing owner queries may already be correct"
 
@@ -119,7 +113,6 @@ class PredicateTerm(TermKind):
 
 
 class LiteralTerm(TermKind):
-    priority = 50
     pattern = "IMPL-1"
     clean_form = "a family whose members own the case; the literals go"
 
@@ -134,7 +127,6 @@ class LiteralTerm(TermKind):
 
 
 class RuleTerm(TermKind):
-    priority = 90
     pattern = "IMPL-14"
     clean_form = "a rule family; the failed rule names itself"
 
@@ -150,7 +142,7 @@ class ChainProfile:
     @classmethod
     def of(cls, chain: ast.BoolOp) -> "ChainProfile":
         counts = collections.Counter(TermKind.of(term) for term in chain.values)
-        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0].priority))
+        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0].declared_position()))
         return cls(tuple((kind.family_name, count) for kind, count in ordered))
 
     @property

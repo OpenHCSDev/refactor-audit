@@ -48,6 +48,10 @@ class Family:
         return tuple(member for member in cls.members() if issubclass(member, capability))
 
     @classmethod
+    def declared_position(cls) -> int:
+        return tuple(cls._registry.values()).index(cls)
+
+    @classmethod
     def decode(cls, name: str) -> type[Self]:
         member = cls._registry.get(name)
         if member is None or not issubclass(member, cls):
