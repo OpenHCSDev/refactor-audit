@@ -17,7 +17,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from audit.chain_terms import ChainProfile
+from audit.chain_terms import ChainProfile, TermKind, TypeTerm, PredicateTerm
 from audit.measures import (
     BuiltinHandlerTypeSwitch, FamilyFlattened, ForeignAbsenceProbe, ForeignNegation,
     Measured, StringDispatch, StringDispatchArms, TypeSwitch,
@@ -224,6 +224,12 @@ class Consumer(MroDispatch):
                 profile = ChainProfile.of(ast.parse(expression, mode="eval").body)
                 self.assertEqual(profile.kinds, ((kind, 4),))
                 self.assertEqual(profile.lead, lead)
+
+    def test_term_kinds_share_one_module_and_ties_follow_declarations(self):
+        self.assertEqual({kind.__module__ for kind in TermKind.members()}, {TermKind.__module__})
+        self.assertLess(TypeTerm.declared_position(), PredicateTerm.declared_position())
+        profile = ChainProfile.of(ast.parse('ready() and isinstance(value, str)', mode='eval').body)
+        self.assertEqual(profile.kinds, (('type', 1), ('predicate', 1)))
 
     def test_merge_review_fails_closed_and_reports_valid_growth(self):
         valid = source_for(3)
