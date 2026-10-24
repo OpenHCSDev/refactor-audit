@@ -589,15 +589,27 @@ class ParseOutcome(ABC):
     path: str
     code_lines: int
 
+    def measured(self) -> tuple[Measured, ...]:
+        return ()
+
+    def unparsed(self) -> tuple[Unparsed, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class Measured(ParseOutcome):
     tally: Tally
 
+    def measured(self) -> tuple[Measured, ...]:
+        return (self,)
+
 
 @dataclass(frozen=True)
 class Unparsed(ParseOutcome):
     error: str
+
+    def unparsed(self) -> tuple[Unparsed, ...]:
+        return (self,)
 
 
 def code_lines(text: str) -> int:

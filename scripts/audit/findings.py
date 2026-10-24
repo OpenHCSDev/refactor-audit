@@ -330,6 +330,7 @@ class IsinstanceSwitch(PerFunctionFinding, Listed):
 
 class ShapeModel(ABC):
     bypasses: ClassVar[bool]
+    hand_mapped: ClassVar[bool] = False
 
     @abstractmethod
     def describe(self) -> str: ...
@@ -349,6 +350,7 @@ class HandMapped(ShapeModel):
     """The function builds this class from the keys it reads: a second copy of the shape, not a bypass."""
     model: str
     bypasses = False
+    hand_mapped = True
 
     def describe(self) -> str:
         return f"HAND-MAPPED into {self.model} (check whether that class decodes this data or presents it)"
@@ -398,7 +400,7 @@ class RawShape(PerFunctionFinding, Listed):
 
     @classmethod
     def summary_note(cls, findings: list[Self]) -> str:
-        hand_mapped = sum(1 for f in findings if isinstance(f.model, HandMapped))
+        hand_mapped = sum(1 for f in findings if f.model.hand_mapped)
         return f"(bypassing an existing class: {sum(1 for f in findings if f.model.bypasses)}; hand-mapped into one: {hand_mapped})"
 
 
