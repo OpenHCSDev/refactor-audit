@@ -15,8 +15,8 @@ class Census:
     @classmethod
     def of(cls, outcomes: Iterable[ParseOutcome]) -> "Census":
         outcomes = tuple(outcomes)
-        return cls(tuple(o for o in outcomes if isinstance(o, Measured)),
-                   tuple(o for o in outcomes if isinstance(o, Unparsed)))
+        return cls(tuple(m for o in outcomes for m in o.measured()),
+                   tuple(u for o in outcomes for u in o.unparsed()))
 
     @property
     def tally(self) -> Tally:
