@@ -18,6 +18,7 @@ from functools import lru_cache
 from typing import ClassVar
 
 from .family import Family
+from .lexical import ModuleScope
 
 
 class Headline:
@@ -66,6 +67,12 @@ class NodeCount(ABC):
 def parsed(source: bytes, filename: str) -> ast.Module:
     """A file's syntax, parsed once while every pass counts it."""
     return ast.parse(source, filename)
+
+
+@lru_cache(maxsize=4)
+def scoped(source: bytes, filename: str) -> ModuleScope:
+    """A file's syntax with its scopes, walked once while every measure reads it."""
+    return ModuleScope(parsed(source, filename), filename)
 
 
 class PatternMeasure(Measure, NodeCount):

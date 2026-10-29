@@ -51,9 +51,9 @@ class StringFieldMetadata(PerFileOccurrenceMeasure):
     """
 
     @staticmethod
-    def sites(repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
-        binding = DecoratorBinding.of(dataclasses.field, ModuleScope(tree, filename))
-        for node in ast.walk(tree):
+    def sites(repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
+        binding = DecoratorBinding.of(dataclasses.field, module)
+        for node in ast.walk(module.tree):
             if isinstance(node, ast.Call) and binding.marks(node.func):
                 yield node
 
@@ -74,8 +74,8 @@ class PlainStrIdAnnotation(PerFileOccurrenceMeasure):
     """ID-shaped fields and parameters retain their nominal kind instead of plain str."""
 
     @staticmethod
-    def sites(repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
-        for node in ast.walk(tree):
+    def sites(repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
+        for node in ast.walk(module.tree):
             match node:
                 case ast.AnnAssign(
                     target=ast.Name(id=name) | ast.Attribute(attr=name), annotation=annotation
@@ -139,9 +139,9 @@ class FrozenFieldWrite(CleanChangedLines, PerFileOccurrenceMeasure):
     construction: typing.ClassVar[str] = "__post_init__"
 
     @classmethod
-    def sites(cls, repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
-        constructing = {id(write) for node in ast.walk(tree) for write in cls.constructing(node)}
-        return (node for node in ast.walk(tree) if id(node) not in constructing)
+    def sites(cls, repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
+        constructing = {id(write) for node in ast.walk(module.tree) for write in cls.constructing(node)}
+        return (node for node in ast.walk(module.tree) if id(node) not in constructing)
 
     @classmethod
     def constructing(cls, node: ast.AST) -> Iterator[ast.Call]:
@@ -182,7 +182,7 @@ class BannedVocabulary(CleanChangedLines, PerFileOccurrenceMeasure):
     @classmethod
     def prose_lines(cls, source: ChangedSource) -> frozenset[int]:
         docstrings: set[int] = set()
-        for node in ast.walk(source.tree):
+        for node in ast.walk(source.head.tree):
             if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 match node.body:
                     case [ast.Expr(value=ast.Constant(value=str()) as value), *_]:
@@ -261,10 +261,9 @@ class NoneAbsence(CleanChangedLines, PerFileOccurrenceMeasure):
     """
 
     @classmethod
-    def sites(cls, repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
-        module = ModuleScope(tree, filename)
+    def sites(cls, repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
         markers = [DecoratorBinding.of(boundary, module) for boundary in repo.absence_boundaries()]
-        pending = [tree]
+        pending: list[ast.AST] = [module.tree]
         while pending:
             node = pending.pop()
             match node:
@@ -756,12 +755,12 @@ class StoreLockCalls(PerFileOccurrenceMeasure):
         {(fcntl.__name__, fcntl.flock.__name__)})
 
     @classmethod
-    def sites(cls, repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
+    def sites(cls, repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
         """The lock calls, none inside a module that owns locking."""
-        if filename.endswith(repo.lock_owners()):
+        if module.path.endswith(repo.lock_owners()):
             return
         functions = repo.lock_functions()
-        for node in ast.walk(tree):
+        for node in ast.walk(module.tree):
             match node:
                 case ast.Call(func=ast.Attribute(value=ast.Name(id=owner), attr=name)) if (
                         (owner, name) in cls.qualified):

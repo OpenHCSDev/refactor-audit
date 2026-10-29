@@ -28,8 +28,8 @@ from pathlib import Path
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from .family import Family
-from .lexical import DecoratorBinding, ModuleScope, NominalProof, ScopeNames, UnprovedIdentity
-from .measures import Measure, parsed
+from .lexical import DecoratorBinding, ModuleScope, NominalProof, UnprovedIdentity
+from .measures import Measure, parsed, scoped
 from .project import AUDIT_SCRIPTS, Project
 from .repository import ChangedPaths, ChangedSource
 
@@ -446,14 +446,14 @@ class OccurrenceMeasure(LocatedSource):
         """Return this node's contribution, excluding its descendants."""
 
     @staticmethod
-    def sites(repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
+    def sites(repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
         """The nodes this measure reads; every node unless a measure excludes some."""
-        return ast.walk(tree)
+        return ast.walk(module.tree)
 
     @classmethod
     def lines(cls, repo: Project, source: bytes, filename: str) -> list[int]:
-        tree = cls.tree(source, filename)
-        return [cls.position.lines(node).start for node in cls.sites(repo, tree, filename)
+        module = scoped(source, filename)
+        return [cls.position.lines(node).start for node in cls.sites(repo, module)
                 for _ in range(cls.occurrences(node))]
 
     @classmethod
@@ -558,14 +558,6 @@ class DeclaredClass:
         return {name: cls(module, statement) for name, (_, statement) in module.declared.items()
                 if isinstance(statement, ast.ClassDef)}
 
-    @property
-    def path(self) -> str:
-        return self.module.path
-
-    @property
-    def scope(self) -> str:
-        return self.module.scope(self.node)
-
     @cached_property
     def declarations(self) -> dict[str, tuple[ast.AST, ast.stmt]]:
         return self.module.declarations(self.node)
@@ -652,14 +644,12 @@ class ChangedModules:
     def heads(self) -> dict[str, dict[str, DeclaredClass]]:
         """Each changed head module's top-level classes, read from the trees the changed lines
         are counted in."""
-        return {source.path: DeclaredClass.top(ModuleScope(source.tree, source.path))
-                for source in self.sources}
+        return {source.path: DeclaredClass.top(source.head) for source in self.sources}
 
     @cached_property
     def bases(self) -> dict[str, dict[str, DeclaredClass]]:
         """Each changed module's top-level classes at the base."""
-        return {source.path: DeclaredClass.top(ModuleScope(source.base_tree, source.path))
-                for source in (*self.left, *self.sources)}
+        return {source.path: DeclaredClass.top(source.base) for source in (*self.left, *self.sources)}
 
     @cached_property
     def kept(self) -> tuple[tuple[DeclaredClass, DeclaredClass], ...]:
@@ -692,8 +682,7 @@ class ProvedMove(Family, ABC, root=True, affix="Move"):
         counted: dict[ModuleScope, set[int]] = {}
         for move in changed.moves:
             sites = [counted.setdefault(declared.module, {id(node) for node in measure.sites(
-                         repo, declared.module.tree, declared.path)})
-                     for declared in (move.left, move.reached)]
+                         repo, declared.module)}) for declared in (move.left, move.reached)]
             ProvedMove.transfer(measure, move, *sites, departed, credited)
         return credited
 
@@ -703,7 +692,7 @@ class ProvedMove(Family, ABC, root=True, affix="Move"):
         """One move's occurrences, paid one for one by those that left the old declaration.
         The parts are proved the same, so they pair node for node in walk order; parts whose
         raw shapes differ pair nothing."""
-        scope = move.left.scope
+        scope = move.left.module.scope(move.left.node)
         scopes = move.left.module.names.found
         for gave, took in zip(move.gave, move.took, strict=True):
             before, after = list(ast.walk(gave)), list(ast.walk(took))
@@ -736,10 +725,10 @@ class FieldExtraction(ProvedMove):
                for name, held in classes.items() if name not in existing]
         edges = [(before, owner, held) for before, owner in changed.kept for held in new
                  for _ in owner.holding(held, before)]
-        owners = Counter((base.path, base.node.name) for base, _, _ in edges)
-        holders = Counter((held.path, held.node.name) for _, _, held in edges)
+        owners = Counter((base.module.path, base.node.name) for base, _, _ in edges)
+        holders = Counter((held.module.path, held.node.name) for _, _, held in edges)
         for base, owner, held in edges:
-            if owners[base.path, base.node.name] == holders[held.path, held.node.name] == 1:
+            if owners[base.module.path, base.node.name] == holders[held.module.path, held.node.name] == 1:
                 for field in sorted(base.fields):
                     if (not owner.binds(field) and field in held.fields
                             and base.declared(field).same(held.declared(field))):
@@ -794,7 +783,7 @@ class MemberRelocation(ProvedMove):
         its decorators, defaults and annotations read, and every global its body reads, each
         resolved to its owning module and name. A global declaration, a name the class body
         binds or one the module's declarations cannot resolve proves nothing."""
-        table = symtable.symtable(ast.unparse(function), declared.path, "exec")
+        table = symtable.symtable(ast.unparse(function), declared.module.path, "exec")
         names = {symbol.get_name() for symbol in table.get_symbols()
                  if symbol.get_name() != function.name}
         for child in MemberRelocation.nested(table):
@@ -839,25 +828,20 @@ class CleanChangedLines(OccurrenceMeasure):
         for measure in Compared.members_with(cls):
             departed: Counter[tuple[str, str]] = Counter()
             for source in left:
-                gone = measure.identities(repo, source.base_tree, source.path)
-                gone.subtract(measure.identities(repo, source.tree, source.path))
+                gone = measure.identities(repo, source.base)
+                gone.subtract(measure.identities(repo, source.head))
                 departed.update(+gone)
             extracted = ProvedMove.credit(repo, measure, changed, departed)
             for source in sources:
                 found[measure.at(source.path)] = measure.changed_sites(repo, source, departed, extracted)
         return found
 
-    @staticmethod
-    def scopes(tree: ast.AST) -> dict[ast.AST, str]:
-        """Each node's enclosing class and function names, dotted; the module is empty."""
-        return ScopeNames.of(tree).found
-
     @classmethod
-    def identities(cls, repo: Project, tree: ast.AST, filename: str) -> Counter[tuple[str, str]]:
+    def identities(cls, repo: Project, module: ModuleScope) -> Counter[tuple[str, str]]:
         """Every occurrence in the module, keyed by its scope and source text."""
-        scopes = cls.scopes(tree)
+        scopes = module.names.found
         found: Counter[tuple[str, str]] = Counter()
-        for node in cls.sites(repo, tree, filename):
+        for node in cls.sites(repo, module):
             if count := cls.occurrences(node):
                 found[scopes[node], ast.unparse(node)] += count
         return found
@@ -883,11 +867,11 @@ class CleanChangedLines(OccurrenceMeasure):
         """The first changed line of each occurrence written there that the base lacks and no
         changed module gave up; a moved occurrence spends the departure it came from, and an
         occurrence a proved move carried spends its credit."""
-        scopes = cls.scopes(source.tree)
-        unwritten = cls.identities(repo, source.tree, source.path)
-        unwritten.subtract(cls.identities(repo, source.base_tree, source.path))
+        scopes = source.head.names.found
+        unwritten = cls.identities(repo, source.head)
+        unwritten.subtract(cls.identities(repo, source.base))
         sites = []
-        for node in cls.sites(repo, source.tree, source.path):
+        for node in cls.sites(repo, source.head):
             if ((count := cls.occurrences(node))
                     and (touched := source.lines.intersection(cls.position.lines(node)))):
                 identity = scopes[node], ast.unparse(node)

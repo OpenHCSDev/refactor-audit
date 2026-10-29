@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .family import Family
-from .measures import Measured, MeasuredRevisions, ParseOutcome, Tally, Unparsed, parsed
+from .measures import Measured, MeasuredRevisions, ParseOutcome, Tally, Unparsed, scoped
 
 
 class GitError(RuntimeError):
@@ -378,12 +378,13 @@ class ChangedSource:
     base_source: bytes
 
     @cached_property
-    def tree(self) -> ast.Module:
-        return parsed(self.source, self.path)
+    def head(self) -> ModuleScope:
+        """The head module, walked once for every measure that reads it."""
+        return scoped(self.source, self.path)
 
     @cached_property
-    def base_tree(self) -> ast.Module:
-        return parsed(self.base_source, self.path)
+    def base(self) -> ModuleScope:
+        return scoped(self.base_source, self.path)
 
     @cached_property
     def tokens(self) -> tuple[tokenize.TokenInfo, ...]:
