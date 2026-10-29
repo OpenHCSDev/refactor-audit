@@ -63,7 +63,7 @@ class ContentCache(ABC):
         directory = self.cache_directory()
         return directory.with_name(f"{directory.name}-{use}")
 
-    def sources(self) -> tuple[Path, ...]:
+    def measuring_sources(self) -> tuple[Path, ...]:
         """Every module loaded in this process under the project's own source roots, plus the
         audit package: measuring subprocesses import it from AUDIT_SCRIPTS, so sys.modules
         alone would miss a change to it. Sorted."""
@@ -77,16 +77,16 @@ class ContentCache(ABC):
 
     @cached_property
     def code(self) -> bytes:
-        """The measuring code (see sources), and every installed distribution: the checkers and
-        everything they read, such as the stack client's Textual. A git install keeps its
-        version across commits, so its recorded origin (direct_url.json) is digested too. A
-        comparison reads it once, after the measures' imports and before its workers start, so
-        the set is the one that ran and every worker carries it."""
+        """The measuring code (see measuring_sources), and every installed distribution: the
+        checkers and everything they read, such as the stack client's Textual. A git install
+        keeps its version across commits, so its recorded origin (direct_url.json) is digested
+        too. A comparison reads it once, after the measures' imports and before its workers
+        start, so the set is the one that ran and every worker carries it."""
         digest = hashlib.sha256(f"{sys.version}\0{__name__}".encode())
         for installed in sorted(f"{dist.name}={dist.version}\0{dist.read_text('direct_url.json')}"
                                 for dist in importlib.metadata.distributions()):
             digest.update(b"\0" + installed.encode())
-        for path in self.sources():
+        for path in self.measuring_sources():
             digest.update(b"\0" + str(path).encode() + b"\0" + path.read_bytes())
         return digest.digest()
 
