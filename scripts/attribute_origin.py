@@ -33,10 +33,10 @@ def main() -> int:
     ap.add_argument("--foundation", default="")
     args = ap.parse_args()
     repo = Repository(args.repo)
-    existing = frozenset(repo.python_files(args.since, args.root))
+    existing = repo.python_paths(args.since, args.root)
     foundation = origin_of(repo, args.rev, args.foundation) if args.foundation else None
     attribution = Attribution(args.since, args.rev)
-    for path in repo.python_files(args.rev, args.root):
+    for path in sorted(repo.python_paths(args.rev, args.root)):
         if path in existing:
             continue
         origin = origin_of(repo, args.rev, path)

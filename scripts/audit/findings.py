@@ -114,7 +114,7 @@ class Package:
     def load(cls, repo: Repository, rev: str, root: str) -> "Package":
         parent = Path(root).parent
         modules, unparsed = [], []
-        for path in repo.python_files(rev, root):
+        for path in sorted(repo.python_paths(rev, root)):
             text = repo.source(rev, path)
             relative = Path(path).relative_to(parent).with_suffix("")
             name = ".".join(relative.parts[:-1] if relative.name == "__init__" else relative.parts)

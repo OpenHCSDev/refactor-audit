@@ -1,9 +1,11 @@
 """Measures of structural debt, each owning how it recognizes its pattern.
 
-Every measure declares the AST node types it inspects; dispatch is built from those
-declarations, so adding a measure is one class. Counts are keyed by measure class.
-Parsing uses the running interpreter: run with the project's Python, because a file the
-parser cannot read is reported as Unparsed and contributes nothing.
+Every measure is one class in the Measure family. A measure the census counts declares the
+AST node types it inspects (NodeCount); dispatch is built from those declarations, so adding
+a measure is one class. A measure the ratchet compares across revisions is Compared (see
+ratchet.py); a measure that is both is one class with both capabilities. Counts are keyed by
+measure class. Parsing uses the running interpreter: run with the project's Python, because a
+file the parser cannot read is reported as Unparsed and contributes nothing.
 """
 from __future__ import annotations
 
@@ -12,91 +14,53 @@ import collections
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cache, lru_cache
 from typing import ClassVar
 
 from .family import Family
-from .handler_declarations import BuiltinHandlerDeclarations
 
 
 class Headline:
-    """Capability: the three measures behind the headline density."""
+    """Capability: the measures behind the headline density."""
 
 
 class Measure(Family, ABC, root=True):
+    """One kind of structural debt. Its capabilities say who counts it: the census (NodeCount),
+    the ratchet (Compared), or both."""
+
+
+class NodeCount(ABC):
+    """Capability: the census counts this measure per AST node of its declared types."""
+
     node_types: ClassVar[tuple[type[ast.AST], ...]]
     weight: ClassVar[int] = 0          # contribution to a file's ranking score
 
     @classmethod
     @abstractmethod
-    def count(cls, node: ast.AST) -> int: ...
+    def occurrences(cls, node: ast.AST) -> int:
+        """This node's contribution, excluding its descendants."""
 
     @classmethod
     def admits(cls, path: str) -> bool:
         return True
 
 
-class PatternMeasure(Measure, abstract=True):
+@lru_cache(maxsize=4)
+def parsed(source: bytes, filename: str) -> ast.Module:
+    """A file's syntax, parsed once while every pass counts it."""
+    return ast.parse(source, filename)
+
+
+class PatternMeasure(Measure, NodeCount, abstract=True):
     """A measure that counts one per matching node."""
 
     @classmethod
-    def count(cls, node: ast.AST) -> int:
+    def occurrences(cls, node: ast.AST) -> int:
         return int(cls.matches(node))
 
     @classmethod
     @abstractmethod
     def matches(cls, node: ast.AST) -> bool: ...
-
-
-class TypeIdentityCheck(PatternMeasure, Headline):
-    weight = 3
-    node_types = (ast.Compare,)
-
-    @classmethod
-    def matches(cls, node: ast.AST) -> bool:
-        match node:
-            case ast.Compare(left=ast.Call(func=ast.Name(id="type"))):
-                return True
-        return False
-
-
-class LongBooleanChain(PatternMeasure, Headline):
-    weight = 5
-    node_types = (ast.BoolOp,)
-    length: ClassVar[int] = 4
-
-    @classmethod
-    def matches(cls, node: ast.AST) -> bool:
-        match node:
-            case ast.BoolOp(values=values):
-                return len(values) >= cls.length
-        return False
-
-
-class BooleanChainTerms(Measure):
-    """Terms in chains of four or more: an eleven-term chain weighs eleven, not one (IMPL-14)."""
-    node_types = (ast.BoolOp,)
-    weight = 1
-
-    @classmethod
-    def count(cls, node: ast.AST) -> int:
-        match node:
-            case ast.BoolOp(values=values) if len(values) >= LongBooleanChain.length:
-                return len(values)
-        return 0
-
-
-class CodecSubclass(PatternMeasure):
-    """Classes adapting a codec for one type (TIME-9); such a type should declare its own wire form."""
-    node_types = (ast.ClassDef,)
-    weight = 3
-
-    @classmethod
-    def matches(cls, node: ast.AST) -> bool:
-        match node:
-            case ast.ClassDef(bases=bases):
-                return any(_base_name(base).endswith("Codec") for base in bases)
-        return False
 
 
 class ForeignAbsenceSyntax:
@@ -121,24 +85,19 @@ class ForeignNegationSyntax:
         return None
 
 
-class ForeignAttributeProbe(Measure, abstract=True):
+class ForeignAttributeProbe(NodeCount):
     @staticmethod
     @abstractmethod
     def attribute(node: ast.AST) -> ast.Attribute | None: ...
 
     @classmethod
-    def count(cls, node: ast.AST) -> int:
+    def occurrences(cls, node: ast.AST) -> int:
         attribute = cls.attribute(node)
         return int(attribute is not None and not _is_self(attribute.value))
 
 
-class ForeignAbsenceProbe(ForeignAbsenceSyntax, ForeignAttributeProbe):
-    """Explicit foreign None comparisons (IDEN-3), not boolean negation."""
-    node_types = (ast.Compare,)
-    weight = 1
 
-
-class ForeignNegation(ForeignNegationSyntax, ForeignAttributeProbe):
+class ForeignNegation(ForeignNegationSyntax, ForeignAttributeProbe, Measure):
     """Unresolved truth-value syntax is a reading lead, not ranked absence debt."""
     node_types = (ast.UnaryOp,)
 
@@ -149,227 +108,6 @@ def _is_self(node: ast.expr) -> bool:
             return True
     return False
 
-
-def _own_nodes(function: ast.AST):
-    """The function's own nodes: nested functions, lambdas and classes are measured on their own."""
-    stack = list(ast.iter_child_nodes(function))
-    while stack:
-        node = stack.pop()
-        match node:
-            case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.Lambda() | ast.ClassDef():
-                continue
-        yield node
-        stack.extend(ast.iter_child_nodes(node))
-
-
-def _literal(node: ast.AST) -> bool:
-    match node:
-        case ast.Constant(value=str() | int() | float()) if not isinstance(node.value, bool):
-            return True
-    return False
-
-
-class DispatchMeasure(Measure, abstract=True):
-    """Per function: subjects decided case by case outside the family that owns the cases."""
-    node_types = (ast.FunctionDef, ast.AsyncFunctionDef)
-    weight = 5
-    arms: ClassVar[int] = 3
-
-    @classmethod
-    def case_groups(cls, node: ast.AST) -> tuple[frozenset[str], ...]:
-        cases: dict[str, set[str]] = collections.defaultdict(set)
-        for inner in _own_nodes(node):
-            for subject, case in cls.cases(inner):
-                cases[subject].add(case)
-        return tuple(frozenset(found) for found in cases.values() if len(found) >= cls.arms)
-
-    @classmethod
-    def count(cls, node: ast.AST) -> int:
-        return len(cls.case_groups(node))
-
-    @classmethod
-    @abstractmethod
-    def cases(cls, node: ast.AST): ...
-
-
-class StringDispatch(DispatchMeasure):
-    """One subject compared against three or more literals (IMPL-1): a family's cases, spelled outside it."""
-
-    @classmethod
-    def cases(cls, node: ast.AST):
-        match node:
-            case ast.Compare(left=left, ops=ops, comparators=comparators):
-                for op, right in zip(ops, comparators):
-                    match op, right:
-                        case (ast.Eq() | ast.NotEq(), literal) if _literal(literal):
-                            yield ast.unparse(left), repr(literal.value)
-                        case (ast.In() | ast.NotIn(), ast.Set(elts=items) | ast.Tuple(elts=items) | ast.List(elts=items)):
-                            yield from ((ast.unparse(left), repr(item.value)) for item in items if _literal(item))
-            case ast.Match(subject=subject, cases=match_cases):
-                for case in match_cases:
-                    match case.pattern:
-                        case ast.MatchValue(value=literal) if _literal(literal):
-                            yield ast.unparse(subject), repr(literal.value)
-
-
-class TypeSwitch(DispatchMeasure):
-    """Three or more type checks on one subject (IMPL-3): behaviour chosen outside the classes it belongs to."""
-
-    @classmethod
-    def cases(cls, node: ast.AST):
-        match node:
-            case ast.Call(func=ast.Name(id="isinstance"), args=[subject, kind]):
-                yield ast.unparse(subject), ast.unparse(kind)
-            case ast.Compare(left=ast.Call(func=ast.Name(id="type"), args=[subject]), comparators=[kind]):
-                yield ast.unparse(subject), ast.unparse(kind)
-            case ast.Match(subject=subject, cases=match_cases):
-                for case in match_cases:
-                    match case.pattern:
-                        case ast.MatchClass(cls=kind):
-                            yield ast.unparse(subject), ast.unparse(kind)
-
-
-class DispatchArmCount:
-    """Capability: count distinct arms, so growing an existing candidate is visible too.
-
-    The same three-arm detection threshold applies. This is a heuristic, not a proof
-    of domain ownership or a complete no-new-case guard.
-    """
-    weight = 1
-
-    @classmethod
-    def count(cls, node: ast.AST) -> int:
-        return sum(len(group) for group in cls.case_groups(node))
-
-
-class StringDispatchArms(DispatchArmCount, StringDispatch):
-    """Distinct literal arms in the string-dispatch candidates."""
-
-
-class TypeSwitchArms(DispatchArmCount, TypeSwitch):
-    """Distinct type arms in the type-switch candidates."""
-
-
-class BuiltinHandlerTypeSwitch(BuiltinHandlerDeclarations, TypeSwitch):
-    """Primitive MroDispatch arms outside the codec, even one per method.
-
-    Splitting a primitive switch into decorated methods is counted arm by arm.
-    AST/domain handlers are a different taxonomy. See the shared collector's
-    screening scope; this count does not prove native execution ownership.
-    """
-    node_types = (ast.Module,)
-
-    @classmethod
-    def count(cls, node: ast.AST) -> int:
-        return cls.count_module(node)
-
-
-class FamilyFlattened(Measure):
-    """Screen name transport and string redispatch, not declaration-owned identity.
-
-    A pure property projecting its receiver's declaration name supplies identity,
-    not behavior. Consumers comparing strings to choose behavior are still sites.
-    Module context distinguishes those roles and admits unique literal bindings;
-    dynamic/imported values remain outside this syntactic collector's proof scope.
-    """
-    node_types = (ast.Module,)
-    weight = 3
-    names: ClassVar[frozenset[str]] = frozenset({"declared_name", "family_name"})
-
-    @classmethod
-    def _flattened(cls, node: ast.AST | None) -> int:
-        match node:
-            case ast.Attribute(attr=attr) if attr in cls.names:
-                return 1
-            case ast.BoolOp(values=values) | ast.Tuple(elts=values):
-                return sum(cls._flattened(v) for v in values)
-        return 0
-
-    @classmethod
-    def identity_return(cls, function: ast.FunctionDef, properties: set[str], builtins: set[str]) -> ast.Return | None:
-        if len(function.decorator_list) != 1:
-            return None
-        decorator = function.decorator_list[0]
-        if not (isinstance(decorator, ast.Name) and decorator.id in properties
-                or isinstance(decorator, ast.Attribute) and decorator.attr == "property"
-                and isinstance(decorator.value, ast.Name) and decorator.value.id in builtins):
-            return None
-        parameters = (*function.args.posonlyargs, *function.args.args)
-        body = function.body
-        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
-            body = body[1:]
-        if len(parameters) != 1 or len(body) != 1 or not isinstance(body[0], ast.Return):
-            return None
-        value = body[0].value
-        if not isinstance(value, ast.Attribute) or value.attr not in cls.names:
-            return None
-        owner = value.value
-        while isinstance(owner, ast.Attribute):
-            owner = owner.value
-        return body[0] if isinstance(owner, ast.Name) and owner.id == parameters[0].arg else None
-
-    @classmethod
-    def occurrences(cls, node: ast.AST) -> tuple[ast.AST, ...]:
-        if not isinstance(node, ast.Module):
-            return ()
-        nodes = tuple(ast.walk(node))
-        # Only unique, literal module declarations are admitted as string values.
-        # Writes/parameters/imports in any scope conservatively keep a name open.
-        writes = collections.Counter(item.id for item in nodes
-                                     if isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del)))
-        writes.update(item.arg for item in nodes if isinstance(item, ast.arg))
-        writes.update(item.name for item in nodes if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
-        for item in nodes:
-            if isinstance(item, (ast.Import, ast.ImportFrom)):
-                writes.update(alias.asname or alias.name.split('.')[0] for alias in item.names)
-        strings = {}
-        for statement in node.body:
-            match statement:
-                case ast.Assign(targets=[ast.Name(id=name)], value=ast.Constant(value=str() as value)) | ast.AnnAssign(target=ast.Name(id=name), value=ast.Constant(value=str() as value)):
-                    if writes[name] == 1:
-                        strings[name] = value
-        properties = {"property"} if not writes["property"] else set()
-        builtins = set()
-        for statement in node.body:
-            if isinstance(statement, ast.ImportFrom) and statement.module == "builtins":
-                properties.update(alias.asname or alias.name for alias in statement.names
-                                  if alias.name == "property" and writes[alias.asname or alias.name] == 1)
-            elif isinstance(statement, ast.Import):
-                builtins.update(alias.asname or alias.name for alias in statement.names
-                                if alias.name == "builtins" and writes[alias.asname or alias.name] == 1)
-        identities = {returned for item in nodes
-                      if isinstance(item, ast.FunctionDef)
-                      and (returned := cls.identity_return(item, properties, builtins)) is not None}
-
-        def string_value(value: ast.AST) -> str | None:
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                return value.value
-            if isinstance(value, ast.Name) and value.id in strings:
-                return strings[value.id]
-            return None
-
-        found = []
-        for item in nodes:
-            match item:
-                case ast.Call(args=args, keywords=keywords):
-                    found.extend([item] * (sum(cls._flattened(a) for a in args) + sum(cls._flattened(k.value) for k in keywords)))
-                case ast.Return(value=value) if item not in identities:
-                    found.extend([item] * cls._flattened(value))
-                case ast.Compare(left=left, ops=operators, comparators=rights):
-                    for operator, right in zip(operators, rights, strict=True):
-                        left_string, right_string = string_value(left), string_value(right)
-                        # Presence validation and comparisons of two known values
-                        # do not choose a named behavior for a dynamic subject.
-                        if (isinstance(operator, (ast.Eq, ast.NotEq))
-                                and left_string != "" and right_string != ""
-                                and ((left_string is None) != (right_string is None))):
-                            found.append(item)
-                        left = right
-        return tuple(found)
-
-    @classmethod
-    def count(cls, node: ast.AST) -> int:
-        return len(cls.occurrences(node))
 
 
 class StringKeySubscript(PatternMeasure, Headline):
@@ -396,12 +134,12 @@ class LiteralKeyGet(PatternMeasure):
         return False
 
 
-class StringEquality(Measure):
+class StringEquality(Measure, NodeCount):
     weight = 1
     node_types = (ast.Compare,)
 
     @classmethod
-    def count(cls, node: ast.AST) -> int:
+    def occurrences(cls, node: ast.AST) -> int:
         match node:
             case ast.Compare(ops=ops, comparators=comparators):
                 return sum(1 for op, cmp in zip(ops, comparators)
@@ -409,12 +147,12 @@ class StringEquality(Measure):
         return 0
 
 
-class NoneIdentity(Measure):
+class NoneIdentity(Measure, NodeCount):
     weight = 1
     node_types = (ast.Compare,)
 
     @classmethod
-    def count(cls, node: ast.AST) -> int:
+    def occurrences(cls, node: ast.AST) -> int:
         match node:
             case ast.Compare(ops=ops, comparators=comparators):
                 return sum(1 for op, cmp in zip(ops, comparators)
@@ -547,7 +285,7 @@ def _base_name(node: ast.AST) -> str:
 @cache
 def _dispatch() -> dict[type[ast.AST], tuple[type[Measure], ...]]:
     table: dict[type[ast.AST], list[type[Measure]]] = collections.defaultdict(list)
-    for measure in Measure.members():
+    for measure in Measure.members_with(NodeCount):
         for node_type in measure.node_types:
             table[node_type].append(measure)
     return {node_type: tuple(measures) for node_type, measures in table.items()}
@@ -581,7 +319,7 @@ class Tally:
         return sum(self.density(measure) for measure in Measure.members_with(Headline))
 
     def as_record(self) -> dict[str, int]:
-        return {measure.family_name: self.counts[measure] for measure in Measure.members()} | {"code_lines": self.code_lines}
+        return {measure.family_name: self.counts[measure] for measure in Measure.members_with(NodeCount)} | {"code_lines": self.code_lines}
 
 
 @dataclass(frozen=True)
@@ -627,7 +365,7 @@ def measure_source(path: str, text: str) -> ParseOutcome:
     for node in ast.walk(tree):
         for measure in dispatch.get(type(node), ()):
             if measure.admits(path):
-                tally.counts[measure] += measure.count(node)
+                tally.counts[measure] += measure.occurrences(node)
     return Measured(path, lines, tally)
 
 

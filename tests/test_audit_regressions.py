@@ -18,11 +18,11 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from audit.chain_terms import ChainProfile, TermKind, TypeTerm, PredicateTerm
-from audit.measures import (
-    BuiltinHandlerTypeSwitch, FamilyFlattened, ForeignAbsenceProbe, ForeignNegation,
-    Measured, StringDispatch, StringDispatchArms, TypeSwitch,
-    TypeSwitchArms, measure_source,
+from audit.dispatch import (
+    BuiltinHandlerTypeSwitch, StringDispatch, StringDispatchArms, TypeSwitch, TypeSwitchArms,
 )
+from audit.measures import ForeignNegation, Measured, measure_source
+from audit.source_measures import FamilyFlattened, ForeignAbsenceProbe
 from audit.repository import Repository
 from merge_review import MergeReview
 
@@ -91,7 +91,7 @@ def read(editor, unknown):
                 measured = measure_source(case["path"], source)
                 self.assertEqual(measured.tally[FamilyFlattened], case["expected"])
                 if case["fixture"] == "send-selector.py":
-                    sites = FamilyFlattened.occurrences(ast.parse(source))
+                    sites = FamilyFlattened.flattened(ast.parse(source))
                     self.assertEqual([ast.unparse(site) for site in sites], ["self.name == SEND_TOOL"])
 
     def test_identity_projection_is_not_string_redispatch(self):
@@ -113,7 +113,7 @@ def execute(call):
     if call.name == SEND_TOOL:
         return "special behavior"
 '''
-                sites = FamilyFlattened.occurrences(ast.parse(compared))
+                sites = FamilyFlattened.flattened(ast.parse(compared))
                 self.assertEqual(len(sites), 1)
                 self.assertIsInstance(sites[0], ast.Compare)
                 self.assertEqual(measure_source("arbitrary.py", compared).tally[FamilyFlattened], 1)

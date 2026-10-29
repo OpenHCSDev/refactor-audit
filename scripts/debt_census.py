@@ -35,7 +35,7 @@ class Scope:
         return not path.startswith(self.excluded)
 
     def snapshot(self, rev: str) -> Census:
-        return Census.of(self.repo.measure(rev, p) for p in self.repo.python_files(rev, self.root) if self.includes(p))
+        return Census.of(self.repo.measure(rev, p) for p in sorted(self.repo.python_paths(rev, self.root)) if self.includes(p))
 
     def changes_since(self, base: str) -> Census:
         return Census.of(c.delta(self.repo, base, self.rev) for c in self.repo.changes(base, self.rev, self.root)

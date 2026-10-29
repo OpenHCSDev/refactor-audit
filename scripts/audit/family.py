@@ -3,10 +3,12 @@
 A family root is declared with ``root=True``. Every concrete member registers under a name
 derived from its class name (snake case, minus the family's affix). ``name=`` is only for
 spellings an external format dictates (git's status letters, for example). Intermediate
-classes that group members declare ``abstract=True`` and do not register.
+classes that group members declare ``abstract=True`` and do not register; a class with an
+unimplemented abstract method is never a member either, whatever it declares.
 """
 from __future__ import annotations
 
+import inspect
 import re
 from typing import ClassVar, Self
 
@@ -41,7 +43,9 @@ class Family:
 
     @classmethod
     def members(cls) -> tuple[type[Self], ...]:
-        return tuple(member for member in cls._registry.values() if issubclass(member, cls))
+        # ABCMeta records abstract methods after __init_subclass__, so they are read here.
+        return tuple(member for member in cls._registry.values()
+                     if issubclass(member, cls) and not inspect.isabstract(member))
 
     @classmethod
     def members_with(cls, capability: type) -> tuple[type[Self], ...]:

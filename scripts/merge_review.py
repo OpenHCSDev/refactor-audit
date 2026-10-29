@@ -19,7 +19,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from audit.census import Census  # noqa: E402
-from audit.measures import DispatchMeasure, Measure, Tally, Unparsed, interpreter  # noqa: E402
+from audit.dispatch import DispatchMeasure  # noqa: E402
+from audit.measures import Measure, NodeCount, Tally, Unparsed, interpreter  # noqa: E402
 from audit.origin import ModuleOrigin, decode_origin  # noqa: E402
 from audit.repository import Repository  # noqa: E402
 
@@ -38,15 +39,15 @@ class MergeReview:
         return cls(sha, decode_origin(merged_at, subject), census.tally, census.unparsed)
 
     def added(self) -> int:
-        return sum(measure.weight * max(0, self.change[measure]) for measure in Measure.members())
+        return sum(measure.weight * max(0, self.change[measure]) for measure in Measure.members_with(NodeCount))
 
     def rose(self, limit: int) -> str:
-        risen = sorted(((m, self.change[m]) for m in Measure.members() if self.change[m] > 0 and m.weight),
+        risen = sorted(((m, self.change[m]) for m in Measure.members_with(NodeCount) if self.change[m] > 0 and m.weight),
                        key=lambda item: -item[0].weight * item[1])
         return ", ".join(f"{m.family_name} +{n}" for m, n in risen[:limit])
 
     def dispatch_added(self) -> tuple[tuple[type[Measure], int], ...]:
-        return tuple((m, self.change[m]) for m in Measure.members() if issubclass(m, DispatchMeasure) and self.change[m] > 0)
+        return tuple((m, self.change[m]) for m in Measure.members_with(NodeCount) if issubclass(m, DispatchMeasure) and self.change[m] > 0)
 
 
 def main() -> int:
@@ -73,7 +74,7 @@ def main() -> int:
         return 2
     net = sum((r.change for r in reviews), Tally())
     print(f"{len(reviews)} merges, {args.since}..{args.rev}\n")
-    print("net change: " + ", ".join(f"{m.family_name} {net[m]:+d}" for m in Measure.members() if net[m]))
+    print("net change: " + ", ".join(f"{m.family_name} {net[m]:+d}" for m in Measure.members_with(NodeCount) if net[m]))
     print(f"code lines {net.code_lines:+d}\n")
     print("merges adding the most debt (weighted):")
     for review in sorted(reviews, key=lambda r: -r.added())[: args.top]:
