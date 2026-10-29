@@ -21,7 +21,7 @@ from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from .findings import Package, ParsedModule, RawShape
 from .identity import TypePositions
-from .lexical import DecoratorBinding
+from .lexical import DecoratorBinding, ModuleScope
 from .measures import (ForeignAbsenceSyntax, ForeignAttributeProbe, Headline, Measure,
                        MechanismOwners, NodeCount, PatternMeasure)
 from .project import Project
@@ -52,7 +52,7 @@ class StringFieldMetadata(PerFileOccurrenceMeasure):
 
     @staticmethod
     def sites(repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
-        binding = DecoratorBinding.of(dataclasses.field, tree, filename)
+        binding = DecoratorBinding.of(dataclasses.field, ModuleScope(tree, filename))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and binding.marks(node.func):
                 yield node
@@ -262,8 +262,8 @@ class NoneAbsence(CleanChangedLines, PerFileOccurrenceMeasure):
 
     @classmethod
     def sites(cls, repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
-        markers = [DecoratorBinding.of(boundary, tree, filename)
-                   for boundary in repo.absence_boundaries()]
+        module = ModuleScope(tree, filename)
+        markers = [DecoratorBinding.of(boundary, module) for boundary in repo.absence_boundaries()]
         pending = [tree]
         while pending:
             node = pending.pop()

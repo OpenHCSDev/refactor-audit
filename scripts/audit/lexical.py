@@ -6,17 +6,23 @@ import ast
 import builtins
 import copy
 import typing
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
+
+type Scope = ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
 
 class ScopeNames(ast.NodeVisitor):
     """Each node's enclosing class and function names, dotted, through the AST's own dispatch,
-    with the names each node binds where it stands and the nodes that declare them: a class or
-    function, an import alias, an annotated name. A star import binds ``*``."""
+    with the scope each module, class and function opens, the names each node binds where it
+    stands and the nodes that declare them: a class or function, an import alias, an annotated
+    name. A star import binds ``*``."""
 
     def __init__(self) -> None:
         self.found: dict[ast.AST, str] = {}
+        self.opens: dict[ast.AST, str] = {}
         self.scope = ""
         self.binds: dict[ast.AST, tuple[str, ...]] = {}
         self.declares: set[ast.AST] = set()
@@ -24,17 +30,22 @@ class ScopeNames(ast.NodeVisitor):
     @classmethod
     def of(cls, tree: ast.AST) -> ScopeNames:
         names = cls()
+        names.opens[tree] = ""
         names.visit(tree)
         return names
 
+    @cached_property
+    def scoped(self) -> dict[str, dict[str, list[ast.AST]]]:
+        """Every binding of each name, grouped by the lexical scope it stands in, in walk order."""
+        found: dict[str, dict[str, list[ast.AST]]] = {}
+        for node, names in self.binds.items():
+            for name in names:
+                found.setdefault(self.found[node], {}).setdefault(name, []).append(node)
+        return found
+
     def bindings(self, scope: str) -> dict[str, list[ast.AST]]:
         """Every binding of each name in one lexical scope, in walk order."""
-        found: dict[str, list[ast.AST]] = {}
-        for node, names in self.binds.items():
-            if self.found[node] == scope:
-                for name in names:
-                    found.setdefault(name, []).append(node)
-        return found
+        return self.scoped.get(scope, {})
 
     def generic_visit(self, node: ast.AST) -> None:
         self.found[node] = self.scope
@@ -44,7 +55,7 @@ class ScopeNames(ast.NodeVisitor):
         self.found[node] = outer = self.scope
         self.binds[node] = (node.name,)
         self.declares.add(node)
-        self.scope = f"{outer}.{node.name}"
+        self.scope = self.opens[node] = f"{outer}.{node.name}"
         super().generic_visit(node)
         self.scope = outer
 
@@ -111,9 +122,23 @@ class ScopeNames(ast.NodeVisitor):
         self.visit_named(node)
 
 
-class NominalProof:
+class NominalProof(ABC):
     """What an expression's resolved owners prove it is; only two proved identities with
     the same owners and structure are the same."""
+
+    @abstractmethod
+    def same(self, other: NominalProof) -> bool: ...
+
+    @abstractmethod
+    def matches(self, key: str) -> bool: ...
+
+    @abstractmethod
+    def keys(self) -> tuple[str, ...]:
+        """The keys an index of proved identities files this under: none when unproved."""
+
+
+class UnprovedIdentity(NominalProof):
+    """A reference the binding facts could not resolve: equal to nothing, itself included."""
 
     def same(self, other: NominalProof) -> bool:
         return False
@@ -121,9 +146,8 @@ class NominalProof:
     def matches(self, key: str) -> bool:
         return False
 
-
-class UnprovedIdentity(NominalProof):
-    """A reference the binding facts could not resolve: equal to nothing, itself included."""
+    def keys(self) -> tuple[str, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -136,99 +160,75 @@ class ProvedIdentity(NominalProof):
     def matches(self, key: str) -> bool:
         return key == self.key
 
+    def keys(self) -> tuple[str, ...]:
+        return (self.key,)
 
-@dataclass(frozen=True)
-class DecoratorBinding:
-    """The spellings one module binds to a declared name (a decorator, a field factory, a
-    class), read from its module-level imports and declarations.
 
-    A name of the same spelling declared or imported from anywhere else marks nothing, and
-    neither does a spelling the module binds twice, conditionally or by star import.
-    """
+@dataclass(frozen=True, eq=False)
+class ModuleScope:
+    """One module's lexical facts, from one walk of its tree: the module it imports as, the
+    names each of its scopes binds and declares, and what a spelling read in one of its scopes
+    is bound to."""
 
-    names: frozenset[str]
+    tree: ast.Module
+    path: str
 
-    @classmethod
-    def of(cls, decorator: typing.Callable[..., object], tree: ast.AST,
-           filename: str) -> DecoratorBinding:
-        return cls.named(decorator.__module__, decorator.__name__, tree, filename)
+    @cached_property
+    def names(self) -> ScopeNames:
+        return ScopeNames.of(self.tree)
 
-    @staticmethod
-    def module_of(filename: str) -> tuple[str, ...]:
-        """The dotted module a source path imports as; ``src`` is the import root."""
-        parts = Path(filename).with_suffix("").parts
+    @cached_property
+    def module(self) -> tuple[str, ...]:
+        """The dotted module the source path imports as; ``src`` is the import root."""
+        parts = Path(self.path).with_suffix("").parts
         return parts[1:] if parts[:1] == ("src",) else parts
 
-    @classmethod
-    def named(cls, owner: str, name: str, tree: ast.AST, filename: str,
-              scope: str = "") -> DecoratorBinding:
-        """The spellings binding ``owner.name`` in the module at ``filename``, as read from
-        ``scope``: a spelling whose root that scope rebinds names something else there."""
-        module = cls.module_of(filename)
-        package = module[:-1]
-        names: set[str] = set()
-        body = typing.cast(ast.Module, tree).body
-        for bound, (declaration, statement) in cls.declarations(tree, "", body).items():
-            match statement, declaration:
-                case ast.ClassDef() | ast.FunctionDef() | ast.AsyncFunctionDef(), _ if (
-                        ".".join(module) == owner and bound == name):
-                    names.add(name)
-                case ast.Import(), ast.alias(name=imported, asname=alias) if imported == owner:
-                    names.add(f"{alias or imported}.{name}")
-                case ast.ImportFrom(module=source, level=level), ast.alias(name=imported):
-                    base = package[:len(package) - level + 1] if level else ()
-                    resolved = ".".join((*base, source) if source else base)
-                    if f"{resolved}.{imported}" == owner:
-                        names.add(f"{bound}.{name}")
-                    if resolved == owner and imported == name:
-                        names.add(bound)
-        hidden = cls.bindings(tree, scope).keys() if scope else frozenset()
-        return cls(frozenset(spelling for spelling in names if spelling.split(".")[0] not in hidden))
+    def scope(self, node: Scope) -> str:
+        """The dotted scope the module, class or function opens."""
+        return self.names.opens[node]
 
-    @staticmethod
-    def bindings(tree: ast.AST, scope: str) -> dict[str, list[ast.AST]]:
-        """Every binding of each name in one lexical module or class scope, as ScopeNames
-        decodes it; bindings inside nested functions and classes are theirs, not this scope's."""
-        return ScopeNames.of(tree).bindings(scope)
+    def bindings(self, scope: Scope) -> dict[str, list[ast.AST]]:
+        """Every binding of each name in that scope; bindings inside nested functions and
+        classes are theirs, not this scope's."""
+        return self.names.bindings(self.scope(scope))
 
-    @staticmethod
-    def declarations(tree: ast.AST, scope: str,
-                     body: list[ast.stmt]) -> dict[str, tuple[ast.AST, ast.stmt]]:
+    def declarations(self, scope: ast.Module | ast.ClassDef) -> dict[str, tuple[ast.AST, ast.stmt]]:
         """Each name the scope binds exactly once, by a declaring node that is one of its body's
         statements or such a statement's direct child, with that statement. A star import
         leaves no name proved."""
-        names = ScopeNames.of(tree)
-        bindings = names.bindings(scope)
+        bindings = self.bindings(scope)
         if "*" in bindings:
             return {}
-        owners = {child: statement for statement in body
+        owners = {child: statement for statement in scope.body
                   for child in (statement, *ast.iter_child_nodes(statement))}
         return {name: (node, owners[node]) for name, (node, *others) in bindings.items()
-                if not others and node in names.declares and node in owners}
+                if not others and node in self.names.declares and node in owners}
 
-    @classmethod
-    def identity(cls, tree: ast.Module, filename: str, scope: str, expression: ast.expr) -> NominalProof:
+    @cached_property
+    def declared(self) -> dict[str, tuple[ast.AST, ast.stmt]]:
+        """The module scope's own declarations."""
+        return self.declarations(self.tree)
+
+    def identity(self, scope: Scope, expression: ast.expr) -> NominalProof:
         """The expression with every name and attribute reference replaced by the module and
         name that own it, as evaluated in ``scope``: an imported name is its source module's
         export, a declared class its own module's, a builtin one the module never binds. A name
         the scope itself binds, or any reference these declarations cannot resolve, proves
         nothing."""
-        module = cls.module_of(filename)
-        package = module[:-1]
-        declared = cls.declarations(tree, "", tree.body)
-        bound = cls.bindings(tree, "")
-        enclosing = cls.bindings(tree, scope)
+        package = self.module[:-1]
+        bound = self.bindings(self.tree)
+        enclosing = self.bindings(scope)
         unresolved: list[str] = []
 
         def owner(name: str) -> str:
-            match declared.get(name) if name not in enclosing else ():
+            match self.declared.get(name) if name not in enclosing else ():
                 case ast.alias(name=imported, asname=alias), ast.Import():
                     return imported if alias else imported.split(".")[0]
                 case ast.alias(name=imported), ast.ImportFrom(module=source, level=level):
                     base = package[:len(package) - level + 1] if level else ()
                     return ".".join((*base, *(source.split(".") if source else ()), imported))
                 case _, ast.ClassDef():
-                    return ".".join((*module, name))
+                    return ".".join((*self.module, name))
             if name not in bound and name not in enclosing and name in vars(builtins):
                 return f"builtins.{name}"
             unresolved.append(name)
@@ -246,6 +246,50 @@ class DecoratorBinding:
 
         owned = Owned().visit(copy.deepcopy(expression))
         return UnprovedIdentity() if unresolved else ProvedIdentity(ast.dump(owned))
+
+
+@dataclass(frozen=True)
+class DecoratorBinding:
+    """The spellings one module binds to a declared name (a decorator, a field factory, a
+    class), read from its module-level imports and declarations.
+
+    A name of the same spelling declared or imported from anywhere else marks nothing, and
+    neither does a spelling the module binds twice, conditionally or by star import.
+    """
+
+    names: frozenset[str]
+
+    @classmethod
+    def of(cls, decorator: typing.Callable[..., object], module: ModuleScope) -> DecoratorBinding:
+        return cls.named(decorator.__module__, decorator.__name__, module)
+
+    @classmethod
+    def named(cls, owner: str, name: str, module: ModuleScope) -> DecoratorBinding:
+        """The spellings binding ``owner.name`` at the module's top level."""
+        package = module.module[:-1]
+        names: set[str] = set()
+        for bound, (declaration, statement) in module.declared.items():
+            match statement, declaration:
+                case ast.ClassDef() | ast.FunctionDef() | ast.AsyncFunctionDef(), _ if (
+                        ".".join(module.module) == owner and bound == name):
+                    names.add(name)
+                case ast.Import(), ast.alias(name=imported, asname=alias) if imported == owner:
+                    names.add(f"{alias or imported}.{name}")
+                case ast.ImportFrom(module=source, level=level), ast.alias(name=imported):
+                    base = package[:len(package) - level + 1] if level else ()
+                    resolved = ".".join((*base, source) if source else base)
+                    if f"{resolved}.{imported}" == owner:
+                        names.add(f"{bound}.{name}")
+                    if resolved == owner and imported == name:
+                        names.add(bound)
+        return cls(frozenset(names))
+
+    def seen_from(self, module: ModuleScope, scope: Scope) -> DecoratorBinding:
+        """The spellings that still bind it as read from ``scope``: one whose root that scope
+        rebinds names something else there."""
+        hidden = module.bindings(scope)
+        return DecoratorBinding(frozenset(spelling for spelling in self.names
+                                          if spelling.split(".")[0] not in hidden))
 
     def marks(self, decorator: ast.expr) -> bool:
         return ast.unparse(decorator) in self.names
