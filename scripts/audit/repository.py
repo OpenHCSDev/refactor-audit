@@ -350,9 +350,14 @@ class ChangedPaths:
     touched: frozenset[str]
     moved: tuple[tuple[str, str], ...]
 
+    @cached_property
+    def destinations(self) -> dict[str, str]:
+        """Each moved path's head path."""
+        return dict(self.moved)
+
     def at_head(self, path: str) -> str:
         """Where a path is at the head: its move's destination, or itself."""
-        return dict(self.moved).get(path, path)
+        return self.destinations.get(path, path)
 
     @staticmethod
     @cache

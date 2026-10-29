@@ -40,6 +40,7 @@ class StoredFormat:
     required: list[str]
 
 
+@dataclass(frozen=True)
 class ContentCache(ABC):
     """Capability: results that are pure functions of content, stored under a digest of that
     content, of the measuring code and of the environment its checkers run in. The key is the
@@ -48,8 +49,12 @@ class ContentCache(ABC):
     not Textual's commit, and a git dependency moves without changing its version."""
 
     retention_days: typing.ClassVar[int] = 14
-    # The measuring code's digest, part of every key (see measuring_code).
-    code: bytes
+    # The measuring code's digest, part of every key, taken when the cache's owner is made:
+    # after the measures it runs are imported, so every worker a comparison forks carries it.
+    code: bytes = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "code", self.measuring_code())
 
     @abstractmethod
     def cache_directory(self) -> Path:
@@ -126,15 +131,7 @@ class ContentCache(ABC):
 
 @dataclass(frozen=True)
 class Project[Guard](ContentCache, MechanismOwners, Repository, ABC):
-    """The measured repository and its own facts. Guard is the class of its standing guards.
-
-    Its measuring code is digested when it is made, after the measures it runs are imported,
-    so every worker a comparison forks carries the same key."""
-
-    code: bytes = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "code", self.measuring_code())
+    """The measured repository and its own facts. Guard is the class of its standing guards."""
 
     @abstractmethod
     def pool(self, workers: int) -> Executor:

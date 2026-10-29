@@ -34,8 +34,8 @@ class MergeReview:
 
     @classmethod
     def of(cls, census: CensusRun, sha: str, merged_at: int, subject: str, root: str) -> "MergeReview":
-        measured = Census.of(file_change.delta(census, f"{sha}^1", sha)
-                             for file_change in census.repo.python_changes(f"{sha}^1", sha, root))
+        measured = Census.of(census.table, (file_change.delta(census, f"{sha}^1", sha)
+                             for file_change in census.repo.python_changes(f"{sha}^1", sha, root)))
         return cls(sha, decode_origin(merged_at, subject), measured.tally, measured.unparsed)
 
     def added(self) -> int:

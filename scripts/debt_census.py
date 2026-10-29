@@ -35,11 +35,11 @@ class Scope:
         return not path.startswith(self.excluded)
 
     def snapshot(self, rev: str) -> Census:
-        return Census.of(self.census.measure(rev, p) for p in sorted(self.census.repo.python_paths(rev, self.root)) if self.includes(p))
+        return Census.of(self.census.table, (self.census.measure(rev, p) for p in sorted(self.census.repo.python_paths(rev, self.root)) if self.includes(p)))
 
     def changes_since(self, base: str) -> Census:
-        return Census.of(c.delta(self.census, base, self.rev) for c in self.census.repo.python_changes(base, self.rev, self.root)
-                         if self.includes(c.path))
+        return Census.of(self.census.table, (c.delta(self.census, base, self.rev) for c in self.census.repo.python_changes(base, self.rev, self.root)
+                         if self.includes(c.path)))
 
 
 class Report(ABC):

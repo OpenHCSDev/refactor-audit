@@ -30,13 +30,14 @@ class CensusRun(MechanismOwners, MeasuredRevisions):
 
 @dataclass(frozen=True)
 class Census:
+    table: NodeTable
     measured: tuple[Measured, ...]
     unparsed: tuple[Unparsed, ...]
 
     @classmethod
-    def of(cls, outcomes: Iterable[ParseOutcome]) -> "Census":
+    def of(cls, table: NodeTable, outcomes: Iterable[ParseOutcome]) -> "Census":
         outcomes = tuple(outcomes)
-        return cls(tuple(m for o in outcomes for m in o.measured()),
+        return cls(table, tuple(m for o in outcomes for m in o.measured()),
                    tuple(u for o in outcomes for u in o.unparsed()))
 
     @property
@@ -54,13 +55,13 @@ class Census:
 
     def render_top(self, n: int) -> str:
         ranked = sorted(self.measured, key=lambda o: -o.tally.score())[:n]
-        weighted = ", ".join(f"{m.family_name} x{m.weight}" for m in Measure.members_with(NodeCount) if m.weight)
+        weighted = ", ".join(f"{m.family_name} x{m.weight}" for m in self.table.measures if m.weight)
         lines = [f"Top {n} files by weighted debt ({weighted}):"]
         lines += [f"  {o.tally.score():>6}  {o.path}  (code lines {o.tally.code_lines:+})" for o in ranked]
         return "\n".join(lines) if ranked else ""
 
     def record(self) -> dict[str, object]:
-        measures = Measure.members_with(NodeCount)
+        measures = self.table.measures
         return {"tally": self.tally.as_record(measures),
                 "files": {o.path: o.tally.as_record(measures) for o in self.measured},
                 "unparsed": [o.path for o in self.unparsed]}
