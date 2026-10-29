@@ -37,7 +37,9 @@ class StoredFormat:
 
     version: int
     fields: dict[object, object]
-    required: list[str]
+    required: frozenset[str]
+    """The keys every record carries: a set, because declaring a field in a parent class
+    reorders a schema's list without changing what is written."""
 
 
 @dataclass(frozen=True)
