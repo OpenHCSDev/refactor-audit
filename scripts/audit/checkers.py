@@ -18,9 +18,9 @@ from functools import partial
 from pathlib import Path
 
 from .project import Project
-from .ratchet import (Advisory, BaseSide, Compared, ContentCache, Counts, FileCount, HeadSide,
-                      InventoryMeasure, MeasureCount, MemberCount, Side, Site)
-from .repository import Repository
+from .ratchet import (Advisory, BaseSide, Compared, Counts, FileCount, HeadSide, InventoryMeasure,
+                      MeasureCount, MemberCount, Side, Site)
+from .repository import ChangedPaths
 
 
 @dataclass(frozen=True)
@@ -52,7 +52,7 @@ class SideCounts(Compared):
         return found
 
     @classmethod
-    def combine(cls, results: list, repo: Repository, base: str, head: str, changed: set[str],
+    def combine(cls, results: list, repo: Project, base: str, head: str, changed: set[str],
                 root: str) -> tuple[Counts, Counts]:
         found = {side: Counter(site.path for site in sites)
                  for side, sites in cls.taken(results).items()}
@@ -62,15 +62,19 @@ class SideCounts(Compared):
         return counts(BaseSide), counts(HeadSide)
 
     @classmethod
-    def sites(cls, results: list, delta: Counts) -> dict[MeasureCount, list[Site]]:
+    def grown_sites(cls, results: list, delta: Counts,
+                    changed: ChangedPaths) -> dict[MeasureCount, list[Site]]:
         """For each grown subject, the head's findings the base does not also report, matched by
-        message: the lines and messages the change added."""
+        message: the lines and messages the change added. A moved file's base findings are
+        matched at its head path, as its counts are."""
         taken = cls.taken(results)
+        moved = dict(changed.moved)
         grown: dict[MeasureCount, list[Site]] = {}
         for key, change in delta.items():
             if change > 0 and cls.owns(key):
                 subject = typing.cast(FileCount, key).path
-                left = Counter(site.message for site in taken[BaseSide] if site.path == subject)
+                left = Counter(site.message for site in taken[BaseSide]
+                               if moved.get(site.path, site.path) == subject)
                 added = []
                 for site in taken[HeadSide]:
                     if site.path == subject:
@@ -92,7 +96,7 @@ class CheckedRevision(SideCounts):
 
     @staticmethod
     @abstractmethod
-    def command(tree: Path, selected: list[str], side: type[Side]) -> list[str]:
+    def command(repo: Project, tree: Path, selected: list[str], side: type[Side]) -> list[str]:
         """The checker's arguments after `python -m`, run in the revision extracted to the tree."""
 
     @staticmethod
@@ -100,46 +104,49 @@ class CheckedRevision(SideCounts):
         """The files checked by one run of the checker."""
         return [selected]
 
-    @staticmethod
-    def extract(repo: Repository, ref: str, scratch: Path, selected: list[str]) -> None:
-        """Write the revision's files the checker reads."""
-        subprocess.run(["tar", "-x", "-C", scratch], input=repo.read("archive", ref), check=True,
-                       timeout=60)
+    # The file every checker here reads its configuration from.
+    configured: typing.ClassVar[str] = "pyproject.toml"
 
     @staticmethod
-    def configuration(repo: Repository, ref: str) -> str:
-        """The revision's checker configuration blob; a revision without one has none."""
-        return repo.git("rev-parse", f"{ref}:pyproject.toml").strip() if repo.tracks(
-            ref, "pyproject.toml") else ""
+    def extract(repo: Project, ref: str, scratch: Path, selected: list[str]) -> None:
+        """Write the revision's files the checker reads."""
+        repo.extract(ref, scratch)
 
     @classmethod
-    def inputs(cls, repo: Repository, ref: str, head: str, root: str, selected: list[str]) -> str:
+    def configuration(cls, repo: Project, ref: str) -> str:
+        """The revision's checker configuration blob; a revision without one has none."""
+        return repo.identity(ref, cls.configured)
+
+    @classmethod
+    def configure(cls, repo: Project, ref: str, tree: Path) -> None:
+        """Replace the tree's checker configuration with the revision's; a revision without one
+        configures the checker with an empty file."""
+        (tree / cls.configured).write_bytes(repo.contents(ref, cls.configured))
+
+    @classmethod
+    def inputs(cls, repo: Project, ref: str, head: str, root: str, selected: list[str]) -> str:
         """What the findings on the selected files depend on: the revision's whole tree, which
         a checker following imports reads, and the head's configuration."""
-        tree = repo.git("rev-parse", f"{ref}^{{tree}}").strip()
-        return f"{tree} {cls.configuration(repo, head)}"
+        return f"{repo.tree(ref)} {cls.configuration(repo, head)}"
 
     @classmethod
-    def findings(cls, repo: Repository, ref: str, head: str, root: str, selected: list[str],
+    def findings(cls, repo: Project, ref: str, head: str, root: str, selected: list[str],
                  side: type[Side]) -> tuple[type[Side], tuple[CheckerSite, ...]]:
-        return side, ContentCache.memo(
+        return side, repo.memo(
             partial(cls.checked, repo, ref, head, root, selected, side),
             cls.__name__, root, cls.inputs(repo, ref, head, root, selected), *selected)
 
     @classmethod
-    def checked(cls, repo: Repository, ref: str, head: str, root: str, selected: list[str],
+    def checked(cls, repo: Project, ref: str, head: str, root: str, selected: list[str],
                 side: type[Side]) -> tuple[CheckerSite, ...]:
         # A missing checker exits 1 like a finding run, so importing it first fails loud instead.
-        importlib.import_module(cls.command(Path(), [], side)[0])
+        importlib.import_module(cls.command(repo, Path(), [], side)[0])
         with tempfile.TemporaryDirectory(prefix="ratchet-check-") as scratch:
             tree = Path(scratch)
             cls.extract(repo, ref, tree, selected)
-            configuration = tree / "pyproject.toml"
-            configuration.unlink(missing_ok=True)
-            if repo.tracks(head, "pyproject.toml"):
-                configuration.write_bytes(repo.read("show", f"{head}:pyproject.toml"))
-            result = Project.measured().run(
-                (sys.executable, "-m", *cls.command(tree, selected, side)),
+            cls.configure(repo, head, tree)
+            result = repo.run(
+                (sys.executable, "-m", *cls.command(repo, tree, selected, side)),
                 cwd=tree, env=cls.environment(root, tree), timeout=600,
             )
         # A checker reports each file under the path it was given, inside the tree or relative to
@@ -155,7 +162,7 @@ class CheckedRevision(SideCounts):
         return CheckerSite(path, int(match["line"]), match["message"])
 
     @classmethod
-    def parts(cls, repo: Repository, base: str, head: str, changed: set[str],
+    def parts(cls, repo: Project, base: str, head: str, changed: set[str],
               root: str) -> tuple[Callable[[], object], ...]:
         return tuple(partial(cls.findings, repo, ref, head, root, batch, side)
                      for side in Side.sides() for ref in (side.ref(base, head),)
@@ -181,14 +188,14 @@ class Unformatted(Advisory, CheckedRevision):
         return [selected[shard::shards] for shard in range(shards)]
 
     @staticmethod
-    def extract(repo: Repository, ref: str, scratch: Path, selected: list[str]) -> None:
+    def extract(repo: Project, ref: str, scratch: Path, selected: list[str]) -> None:
         # Black reads only the file and the configuration.
         for path, source in repo.sources(ref, set(selected)):
             (scratch / path).parent.mkdir(parents=True, exist_ok=True)
             (scratch / path).write_bytes(source)
 
     @staticmethod
-    def command(tree: Path, selected: list[str], side: type[Side]) -> list[str]:
+    def command(repo: Project, tree: Path, selected: list[str], side: type[Side]) -> list[str]:
         return Unformatted.black("--check", *selected)
 
     @classmethod
@@ -197,7 +204,7 @@ class Unformatted(Advisory, CheckedRevision):
         return CheckerSite(path, 1, "Black would reformat this file")
 
     @classmethod
-    def findings(cls, repo: Repository, ref: str, head: str, root: str, selected: list[str],
+    def findings(cls, repo: Project, ref: str, head: str, root: str, selected: list[str],
                  side: type[Side]) -> tuple[type[Side], tuple[CheckerSite, ...]]:
         """Black reads only the file and the configuration, so each file's findings are stored
         under its own blob and one Black run checks the batch's unstored files."""
@@ -205,10 +212,10 @@ class Unformatted(Advisory, CheckedRevision):
         blobs = repo.blobs(ref, set(selected))
         parts = {path: (cls.__name__, configuration, path, blobs[path]) for path in selected}
         found = {path: typing.cast(tuple[CheckerSite, ...], stored)
-                 for path in selected for stored in ContentCache.stored(*parts[path])}
+                 for path in selected for stored in repo.stored(*parts[path])}
         fresh = [path for path in selected if path not in found]
         checked = cls.checked(repo, ref, head, root, fresh, side) if fresh else ()
-        found |= {path: ContentCache.store(tuple(site for site in checked if site.path == path),
+        found |= {path: repo.store(tuple(site for site in checked if site.path == path),
                                            *parts[path])
                   for path in fresh}
         return side, tuple(site for sites in found.values() for site in sites)
@@ -220,7 +227,7 @@ class LintFindings(Advisory, CheckedRevision):
     finding = re.compile(r"^(?P<path>.+?\.py):(?P<line>\d+):\d+: (?P<message>.*)$", re.MULTILINE)
 
     @staticmethod
-    def command(tree: Path, selected: list[str], side: type[Side]) -> list[str]:
+    def command(repo: Project, tree: Path, selected: list[str], side: type[Side]) -> list[str]:
         return ["ruff", "check", "--no-cache", "--output-format", "concise", *selected]
 
 
@@ -238,13 +245,13 @@ class TypeErrors(CheckedRevision):
                 *arguments]
 
     @staticmethod
-    def command(tree: Path, selected: list[str], side: type[Side]) -> list[str]:
+    def command(repo: Project, tree: Path, selected: list[str], side: type[Side]) -> list[str]:
         # Mypy reuses a cached module whose path, size and whole-second mtime match its file, and
         # hashes the file otherwise. Every extracted tree has a new path, so each module is checked
         # against its content while unchanged analysis carries from one run to the next. Each side
         # keeps its own cache: the two revisions run at once, and a base usually matches the
         # previous run's base.
-        cache = ContentCache.beside("mypy") / side.family_name
+        cache = repo.beside("mypy") / side.family_name
         return TypeErrors.mypy(cache, *(str(tree / path) for path in selected))
 
     @staticmethod
@@ -262,41 +269,40 @@ class GodClassExcess(Advisory, InventoryMeasure[dict[MemberCount, int]]):
     threshold = 500
 
     @classmethod
-    def inventory(cls, repo: Repository, ref: str, root: str) -> frozenset[str]:
+    def inventory(cls, repo: Project, ref: str, root: str) -> frozenset[str]:
         # Complete inventories distinguish a moved declaration from another
         # same-named class in an unchanged module.
         return repo.python_paths(ref, root)
 
     @classmethod
-    def context(cls, repo: Repository, ref: str) -> str:
+    def context(cls, repo: Project, ref: str) -> str:
         """Black formats each file under the revision's own configuration."""
         return CheckedRevision.configuration(repo, ref)
 
     @classmethod
-    def read_fresh(cls, repo: Repository, ref: str, paths: list[str]) -> dict[str, dict[MemberCount, int]]:
+    def read_fresh(cls, repo: Project, ref: str, paths: list[str]) -> dict[str, dict[MemberCount, int]]:
         if not paths:
             return {}
         with tempfile.TemporaryDirectory(prefix="ratchet-layout-") as scratch:
             tree = Path(scratch)
             Unformatted.extract(repo, ref, tree, paths)
-            if repo.read("ls-tree", "--name-only", ref, "--", "pyproject.toml"):
-                (tree / "pyproject.toml").write_bytes(repo.read("show", f"{ref}:pyproject.toml"))
+            CheckedRevision.configure(repo, ref, tree)
             subprocess.run(
                 (sys.executable, "-m", *Unformatted.black("-q", *paths)),
                 cwd=tree,
                 check=True,
                 timeout=600,
             )
-            return {path: cls.reading(path, (tree / path).read_bytes()) for path in paths}
+            return {path: cls.reading(repo, path, (tree / path).read_bytes()) for path in paths}
 
     @classmethod
-    def measured(cls, repo: Repository, ref: str, base: str, head: str,
+    def measured(cls, repo: Project, ref: str, base: str, head: str,
                  readings: dict[str, dict[MemberCount, int]], root: str) -> Counts:
         return {identity: value
                 for values in readings.values() for identity, value in values.items()}
 
     @classmethod
-    def reading(cls, path: str, source: bytes) -> dict[MemberCount, int]:
+    def reading(cls, repo: Project, path: str, source: bytes) -> dict[MemberCount, int]:
         values = {}
         def visit(node: ast.AST, path: str, scope: tuple[str, ...]) -> None:
             match node:

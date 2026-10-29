@@ -1,6 +1,6 @@
 """Measures of the project's own declarations: stored record formats and standing guards.
 
-Their algorithms are here; what a format or a guard is comes from the declared project."""
+Their algorithms are here; what a format or a guard is comes from the measured project."""
 from __future__ import annotations
 
 import ast
@@ -8,8 +8,7 @@ from collections.abc import Callable
 from functools import partial
 
 from .project import Project, StoredFormat
-from .ratchet import ChangeMeasure, Compared, ContentCache, Counts, PhaseSiteCount
-from .repository import Repository
+from .ratchet import ChangeMeasure, Compared, Counts, PhaseSiteCount
 
 
 class UncarriedRecordFormat(ChangeMeasure):
@@ -34,22 +33,22 @@ class UncarriedRecordFormat(ChangeMeasure):
         return False
 
     @classmethod
-    def formats(cls, repo: Repository, ref: str, root: str,
+    def formats(cls, repo: Project, ref: str, root: str,
                 changed: set[str]) -> dict[str, StoredFormat]:
         """Each versioned record in the changed modules that declare one, measured by that
         revision's own code; the commit fixes every input, its stamp included."""
-        versioned = {path for path in changed & repo.python_paths(ref, root)
-                     if cls.declares_version(repo.read("show", f"{ref}:{path}"))}
+        versioned = {path for path, source in repo.sources(ref, changed & repo.python_paths(ref, root))
+                     if cls.declares_version(source)}
         if not versioned:
             return {}
-        return ContentCache.memo(
-            partial(Project.measured().stored_formats, repo, ref, root, versioned),
+        return repo.memo(
+            partial(repo.stored_formats, ref, root, versioned),
             cls.__name__, repo.revision(ref), root, *sorted(changed))
 
     @classmethod
-    def counted(cls, repo: Repository, base: str, head: str, changed: set[str],
+    def counted(cls, repo: Project, base: str, head: str, changed: set[str],
                 root: str) -> tuple[Counts, Counts]:
-        carried = Project.measured().carried(repo, base, head)
+        carried = repo.carried(base, head)
         before = cls.formats(repo, base, root, changed)
         after = cls.formats(repo, head, root, changed)
         uncarried = sum(before[name].version == form.version or not carried
@@ -68,30 +67,29 @@ class DonePhaseBroken(Compared):
     It runs for the source roots that declare the guards."""
 
     @classmethod
-    def parts(cls, repo: Repository, base: str, head: str, changed: set[str],
+    def parts(cls, repo: Project, base: str, head: str, changed: set[str],
               root: str) -> tuple[Callable[[], object], ...]:
-        if root not in Project.measured().guard_roots():
+        if root not in repo.guard_roots():
             return ()
         return tuple(partial(cls.failing, repo, repo.revision(ref)) for ref in (base, head))
 
     @classmethod
-    def combine(cls, results: list, repo: Repository, base: str, head: str, changed: set[str],
+    def combine(cls, results: list, repo: Project, base: str, head: str, changed: set[str],
                 root: str) -> tuple[Counts, Counts]:
         """A failing pull request pays for reading its sites; a passing one never reads them."""
         if not results:
             return {}, {}
         before, after = results
-        project = Project.measured()
         head_commit = repo.revision(head)
         broken: Counts = {
             PhaseSiteCount(cls, guard, site): 1
             for guard in sorted(after - before, key=lambda guard: guard.__name__)
-            for site in project.guard_sites(repo, head_commit, guard)
+            for site in repo.guard_sites(head_commit, guard)
         }
         return dict.fromkeys(broken, 0), broken
 
     @classmethod
-    def failing(cls, repo: Repository, commit: str) -> frozenset[type]:
+    def failing(cls, repo: Project, commit: str) -> frozenset[type]:
         """Each guard not holding at a commit."""
-        return ContentCache.memo(partial(Project.measured().failing_guards, repo, commit),
+        return repo.memo(partial(repo.failing_guards, commit),
                                  cls.__name__, commit)

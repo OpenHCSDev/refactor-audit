@@ -35,7 +35,7 @@ class MergeReview:
     @classmethod
     def of(cls, repo: Repository, sha: str, merged_at: int, subject: str, root: str) -> "MergeReview":
         census = Census.of(file_change.delta(repo, f"{sha}^1", sha)
-                           for file_change in repo.changes(f"{sha}^1", sha, root))
+                           for file_change in repo.python_changes(f"{sha}^1", sha, root))
         return cls(sha, decode_origin(merged_at, subject), census.tally, census.unparsed)
 
     def added(self) -> int:
@@ -59,11 +59,8 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=10)
     args = ap.parse_args()
     repo = Repository(args.repo)
-    log = repo.git("log", "--first-parent", "--merges", "--reverse", "--format=%h%x00%ct%x00%s", f"{args.since}..{args.rev}")
-    reviews = []
-    for line in log.splitlines():
-        sha, merged_at, subject = line.split("\x00", 2)
-        reviews.append(MergeReview.of(repo, sha, int(merged_at), subject, args.root))
+    reviews = [MergeReview.of(repo, merge.sha, merge.time, merge.subject, args.root)
+               for merge in repo.merges(args.since, args.rev)]
     failures = [(review, failure) for review in reviews for failure in review.unparsed]
     if failures:
         print(f"WARNING: {len(failures)} changed-file measurements did not parse under Python "

@@ -7,7 +7,8 @@ execution proof or a complete dynamic Python name resolver.
 from __future__ import annotations
 
 import ast
-from pathlib import PurePath
+
+from .measures import MechanismOwners
 
 
 class BuiltinHandlerDeclarations:
@@ -15,10 +16,10 @@ class BuiltinHandlerDeclarations:
     builtin_types = (dict, list, str, int, float, bool, tuple)
 
     @classmethod
-    def admits(cls, path: str) -> bool:
-        # Only the established wire codec owns primitive discrimination.
-        # Naming another module *_codec.py does not admit a bypass.
-        return PurePath(path).name != "field_codec.py"
+    def admits(cls, repo: MechanismOwners, path: str) -> bool:
+        # Only the repository's declared codec and schema mechanism owns primitive
+        # discrimination. Naming another module *_codec.py does not admit a bypass.
+        return not repo.owns_mechanism(path)
 
     @classmethod
     def count_module(cls, node: ast.Module) -> int:

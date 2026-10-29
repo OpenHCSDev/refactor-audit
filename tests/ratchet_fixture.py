@@ -1,8 +1,8 @@
 """The measured project and the Git checkout the ratchet's tests compare.
 
 FixtureProject declares every fact a project declares, each the answer for a fixture
-repository that has none of the thing, except the codec and the member-selecting call the
-measures' tests read. Its cache lives for one test session, so a run with an unavailable
+repository that has none of the thing, except the codec module and the member-selecting call
+the measures' tests read. Its cache lives for one test session, so a run with an unavailable
 checker never supplies another run's findings."""
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
 from concurrent.futures import Executor, ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from audit.project import Project, StoredFormat
 from audit.ratchet import Compared, compare
-from audit.repository import Repository
 
 CACHE = Path(tempfile.mkdtemp(prefix="ratchet-test-cache-"))
 atexit.register(shutil.rmtree, CACHE, True)
@@ -28,68 +28,58 @@ IDENTITY = ("-c", "user.name=Audit test", "-c", "user.email=audit@example.invali
             "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null")
 
 
-class FixtureProject(Project):
-    @staticmethod
-    def cache_directory() -> Path:
+@dataclass(frozen=True)
+class FixtureProject(Project[object]):
+    """A fixture repository whose sources live under one root."""
+
+    root: str = ""
+
+    def cache_directory(self) -> Path:
         return CACHE / "measure-cache"
 
-    @staticmethod
-    def source_roots() -> tuple[Path, ...]:
+    def source_roots(self) -> tuple[Path, ...]:
         return ()
 
-    @staticmethod
-    def pool(workers: int) -> Executor:
+    def pool(self, workers: int) -> Executor:
         return ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork"))
 
-    @staticmethod
-    def run(command: tuple[str, ...], *, cwd: Path, env: Mapping[str, str],
+    def run(self, command: tuple[str, ...], *, cwd: Path, env: Mapping[str, str],
             timeout: float) -> subprocess.CompletedProcess[bytes]:
         return subprocess.run(command, cwd=cwd, env=env, timeout=timeout, capture_output=True)
 
-    @staticmethod
-    def lock_owners() -> tuple[str, ...]:
+    def lock_owners(self) -> tuple[str, ...]:
         return ()
 
-    @staticmethod
-    def lock_functions() -> frozenset[str]:
+    def lock_functions(self) -> frozenset[str]:
         return frozenset()
 
-    @staticmethod
-    def absence_decoders() -> tuple[Callable[..., object], ...]:
+    def absence_decoders(self) -> tuple[Callable[..., object], ...]:
         return ()
 
-    @staticmethod
-    def codec_names() -> frozenset[str]:
-        return frozenset({"FieldCodec"})
+    def mechanism_modules(self) -> frozenset[Path]:
+        return frozenset({Path(self.root, "field_codec.py")})
 
-    @staticmethod
-    def mechanism_modules() -> frozenset[Path]:
-        return frozenset()
-
-    @staticmethod
-    def selecting_calls() -> frozenset[str]:
+    def selecting_calls(self) -> frozenset[str]:
         return frozenset({"member_named"})
 
-    @staticmethod
-    def stored_formats(repo: Repository, ref: str, root: str,
-                       changed: set[str]) -> dict[str, StoredFormat]:
+    def stored_formats(self, ref: str, root: str, changed: set[str]) -> dict[str, StoredFormat]:
         return {}
 
-    @staticmethod
-    def carried(repo: Repository, base: str, head: str) -> bool:
+    def carried(self, base: str, head: str) -> bool:
         return False
 
-    @staticmethod
-    def guard_roots() -> frozenset[str]:
+    def guard_roots(self) -> frozenset[str]:
         return frozenset()
 
-    @staticmethod
-    def failing_guards(repo: Repository, commit: str) -> frozenset[type]:
+    def failing_guards(self, commit: str) -> frozenset[type[object]]:
         return frozenset()
 
-    @staticmethod
-    def guard_sites(repo: Repository, head: str, guard: type) -> tuple[str, ...]:
+    def guard_sites(self, head: str, guard: type[object]) -> tuple[str, ...]:
         return ()
+
+
+# The project the measures' own tests count source in, outside any checkout.
+PROJECT = FixtureProject(Path())
 
 
 class Checkout:
@@ -98,6 +88,7 @@ class Checkout:
     def __init__(self, path: Path, root: str):
         self.path = path
         self.root = root
+        self.project = FixtureProject(path, root)
         self.git("init", "-q")
 
     def git(self, *args: str) -> str:
@@ -120,5 +111,5 @@ class Checkout:
     def compare(self, base: str, head: str, *measured: type[Compared]) -> tuple[int, dict]:
         """The comparison's exit status and JSON report, taking only the named measures'
         measurements, with a narrow pool so parallel test workers keep their width."""
-        result = compare(Repository(self.path), base, head, self.root, 2, measured)
+        result = compare(self.project, base, head, self.root, 2, measured)
         return int(result.failed), json.loads(json.dumps(result.report()))

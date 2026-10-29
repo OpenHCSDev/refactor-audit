@@ -3,37 +3,45 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import typing
 from dataclasses import dataclass
 from typing import Annotated
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
+from .measures import Headline, NodeCount
+from .project import Project
 from .ratchet import LocatedSource, OccurrenceMeasure, PerFileMeasure
 from .typing_names import TypingImports, TypingReference
 
 
-class StringSubscript(OccurrenceMeasure):
+class StringSubscript(OccurrenceMeasure, NodeCount, Headline):
+    """A container read by a literal string key, ``x["key"]``. A subscript of a typing form,
+    such as ``Literal["a"]``, is a type, not a read: the module's typing bindings decide which,
+    so the census reads the whole module too."""
+
+    weight = 1
+    node_types = (ast.Module,)
+
     @classmethod
-    def lines(cls, source: bytes, filename: str) -> list[int]:
-        tree = cls.tree(source, filename)
+    def module_lines(cls, tree: ast.AST) -> list[int]:
         imports = TypingImports.of(tree)
         found = []
         for node in ast.walk(tree):
-            if cls.occurrences(node):
-                reference = TypingReference(imports)
-                reference.dispatch_sync(node.value)
-                found.extend([cls.position.lines(node).start] * reference.raw_access_count())
+            match node:
+                case ast.Subscript(value=container, slice=ast.Constant(value=str())):
+                    reference = TypingReference(imports)
+                    reference.dispatch_sync(container)
+                    found.extend([cls.position.lines(node).start] * reference.raw_access_count())
         return found
 
-    @staticmethod
-    def occurrences(node: ast.AST) -> int:
-        return int(
-            isinstance(node, ast.Subscript)
-            and isinstance(node.slice, ast.Constant)
-            and isinstance(node.slice.value, str)
-        )
+    @classmethod
+    def lines(cls, repo: Project, source: bytes, filename: str) -> list[int]:
+        return cls.module_lines(cls.tree(source, filename))
+
+    @classmethod
+    def occurrences(cls, node: ast.AST) -> int:
+        return len(cls.module_lines(node)) if isinstance(node, ast.Module) else 0
 
 
 class AnyReference(TypingReference):
@@ -80,7 +88,9 @@ class AnyInTypeExpression(MroDispatch):
         if origin is typing.Literal:
             members = []  # Literal members are values, not types.
         if origin is Annotated:
-            members = getattr(node.slice, "elts", members)[:1]  # The rest is metadata.
+            match node.slice:  # The rest is metadata.
+                case ast.Tuple(elts=[declared, *_]):
+                    members = [declared]
         for member in members:
             self.dispatch_sync(member)
 
@@ -156,7 +166,10 @@ class DeclaredTypeSites(MroDispatch):
     def record_class(scope: tuple[ast.AST, ...]) -> bool:
         """Whether the innermost scope is a class whose annotations are its fields."""
         def last_name(expression: ast.AST) -> str:
-            return ast.unparse(getattr(expression, "func", expression)).rpartition(".")[2]
+            match expression:
+                case ast.Call(func=called):
+                    expression = called
+            return ast.unparse(expression).rpartition(".")[2]
         decorators = {last_name(decorator) for decorator in scope[-1].decorator_list}
         bases = {last_name(base) for base in scope[-1].bases}
         return "dataclass" in decorators or bool(bases & {"NamedTuple", "TypedDict"})
@@ -207,7 +220,7 @@ class AnyName(PerFileMeasure, LocatedSource):
         return tuple(sorted(sites.uses, key=lambda use: (use.line, use.site, use.owner)))
 
     @classmethod
-    def lines(cls, source: bytes, filename: str) -> list[int]:
+    def lines(cls, repo: Project, source: bytes, filename: str) -> list[int]:
         return [use.line for use in cls.uses(source, filename)]
 
 
@@ -218,14 +231,15 @@ class TypeCheckingImport(PerFileMeasure, LocatedSource):
     usual cause is an import cycle the module structure should remove.
 
     The guard is resolved through the module's own typing bindings (``TYPE_CHECKING``,
-    ``typing.TYPE_CHECKING`` and any alias of either), never by spelling. A module the
-    interpreter cannot find at all, such as typeshed's ``_typeshed``, exists only for checkers,
-    so the guard is the one place it can be imported and it is not counted. Each guarded name
-    counts once at its import's line; growth is refused per file, and the existing guarded
-    imports are measured, not remediated."""
+    ``typing.TYPE_CHECKING`` and any alias of either), never by spelling. Every guarded name
+    counts, a stub-only module such as typeshed's ``_typeshed`` included: the count is the
+    source's alone, never the installed packages', and a name that needs the guard is still a
+    dependency hidden from the running module. Each guarded name counts once at its import's
+    line; growth is refused per file, and the existing guarded imports are measured, not
+    remediated."""
 
     @classmethod
-    def lines(cls, source: bytes, filename: str) -> list[int]:
+    def lines(cls, repo: Project, source: bytes, filename: str) -> list[int]:
         tree = cls.tree(source, filename)
         imports = TypingImports.at_any_depth(tree)
         guarded: dict[int, ast.Import | ast.ImportFrom] = {}
@@ -235,8 +249,8 @@ class TypeCheckingImport(PerFileMeasure, LocatedSource):
                     for statement in cls.checker_branch(test, body, orelse, imports):
                         guarded.update((id(inner), inner) for inner in ast.walk(statement)
                                        if isinstance(inner, (ast.Import, ast.ImportFrom)))
-        return sorted(line for statement in guarded.values()
-                      for line in cls.checker_names(statement))
+        return sorted(statement.lineno for statement in guarded.values()
+                      for _ in statement.names)
 
     @classmethod
     def checker_branch(cls, test: ast.expr, body: list[ast.stmt], orelse: list[ast.stmt],
@@ -255,19 +269,3 @@ class TypeCheckingImport(PerFileMeasure, LocatedSource):
                 reference.dispatch_sync(test)
                 return reference.is_type_checking
         return False
-
-    @classmethod
-    def checker_names(cls, statement: ast.Import | ast.ImportFrom) -> list[int]:
-        """The line once per name the statement binds from a module that exists at runtime."""
-        match statement:
-            case ast.ImportFrom(level=0, module=str(module)) if not cls.importable(module):
-                return []
-            case ast.ImportFrom():
-                return [statement.lineno] * len(statement.names)
-        return [statement.lineno for alias in statement.names if cls.importable(alias.name)]
-
-    @staticmethod
-    def importable(module: str) -> bool:
-        """Whether the interpreter can find the module's top-level package; a checker-only stub
-        package has no module to find."""
-        return importlib.util.find_spec(module.partition(".")[0]) is not None

@@ -2,6 +2,7 @@
 the comparison and its report, under the fixture project in conftest.py."""
 
 import ast
+import inspect
 import json
 import os
 import subprocess
@@ -10,14 +11,15 @@ import time
 import black
 import pytest
 
-from audit.checkers import GodClassExcess, LintFindings, TypeErrors, Unformatted
+from audit.checkers import CheckerSite, GodClassExcess, LintFindings, TypeErrors, Unformatted
 from audit.dispatch import (BuiltinHandlerTypeSwitch, StringDispatch, StringDispatchArms,
                             TypeSwitch, TypeSwitchArms)
 from audit.handler_declarations import BuiltinHandlerDeclarations
 from audit.identity import (ComparedKind, DeclaredSpellings, NamedAccess, NamedDeclaration,
                             OwnTypeTest, StringIdentity)
-from audit.ratchet import Compared, Comparison, ContentCache
-from audit.repository import Repository
+from audit.measures import Measure
+from audit.ratchet import BaseSide, CleanChangedLines, Compared, Comparison, HeadSide, SyntaxPasses
+from audit.repository import ChangedPaths
 from audit.source_measures import (BannedVocabulary, BooleanChainTerms, BroadExceptDefault,
                                    BroadSwallow, CodecSubclass, EnumDeclaration, FamilyFlattened,
                                    ForeignAbsenceProbe, ForeignFieldSpellings, FrozenFieldWrite,
@@ -25,7 +27,7 @@ from audit.source_measures import (BannedVocabulary, BooleanChainTerms, BroadExc
                                    PlainStrIdAnnotation, RawRecordShapes, StringFieldMetadata,
                                    TypeIdentity, UnannotatedParameter)
 from audit.typing_measures import AnyName, StringSubscript, TypeCheckingImport
-from ratchet_fixture import Checkout
+from ratchet_fixture import PROJECT, Checkout
 
 
 def test_measure_owner_rejects_a_new_absence() -> None:
@@ -47,7 +49,7 @@ def test_measure_owner_rejects_a_new_absence() -> None:
     ],
 )
 def test_string_field_metadata_resolves_imports_and_refuses_opaque_keys(source, expected):
-    assert StringFieldMetadata.count(source.encode(), "example.py") == expected
+    assert StringFieldMetadata.count(PROJECT, source.encode(), "example.py") == expected
 
 
 @pytest.mark.parametrize(
@@ -70,8 +72,8 @@ def test_string_field_metadata_resolves_imports_and_refuses_opaque_keys(source, 
 )
 def test_plain_str_id_annotations_block_growth_per_file(source, expected):
     path = "src/example.py"
-    before = PlainStrIdAnnotation.snapshot([(path, b"description: str")])
-    after = PlainStrIdAnnotation.snapshot([(path, source.encode())])
+    before = PlainStrIdAnnotation.snapshot(PROJECT, [(path, b"description: str")])
+    after = PlainStrIdAnnotation.snapshot(PROJECT, [(path, source.encode())])
     identity = PlainStrIdAnnotation.at(path)
     comparison = Comparison("src", "base", "head", (path,), before, after, {}, {})
     assert comparison.delta[identity] == expected
@@ -91,7 +93,7 @@ def test_batch_sources_keep_exact_git_bytes_and_path_names(repo: Checkout, monke
     }
     revision = repo.commit(files)
     selected = {f"{repo.root}/{name}" for name in files if name.endswith(".py")}
-    git = Repository(repo.path)
+    git = repo.project
     assert git.python_paths(revision, repo.root) == selected
     expected = [
         (path, subprocess.check_output(["git", "-C", str(repo.path), "show", f"{revision}:{path}"]))
@@ -228,9 +230,9 @@ class Consumer(MroDispatch):
 """
     base = repo.commit({"policy.py": source})
     growing = source.replace("@cases(DomainRecord)", "@cases(list, str)")
-    assert BuiltinHandlerTypeSwitch.count(source.encode(), "policy.py") == 1
-    assert BuiltinHandlerTypeSwitch.count(growing.encode(), "policy.py") == 3
-    assert BuiltinHandlerTypeSwitch.count(b"not valid Python", "field_codec.py") == 0
+    assert BuiltinHandlerTypeSwitch.count(PROJECT, source.encode(), "policy.py") == 1
+    assert BuiltinHandlerTypeSwitch.count(PROJECT, growing.encode(), "policy.py") == 3
+    assert BuiltinHandlerTypeSwitch.count(PROJECT, b"not valid Python", "field_codec.py") == 0
     head = repo.commit({"policy.py": growing})
     status, report = repo.compare(base, head, BuiltinHandlerTypeSwitch)
     identity = BuiltinHandlerTypeSwitch.at(f"{repo.root}/policy.py").text
@@ -288,7 +290,7 @@ def module(*owners: str) -> str:
 )
 def test_family_name_owner_reads_and_codec_detours(source: str, expected: int):
 
-    assert FamilyFlattened.count(source.encode(), "consumer.py") == expected
+    assert FamilyFlattened.count(PROJECT, source.encode(), "consumer.py") == expected
 
 
 def test_small_owners_stay_within_the_class_threshold(repo: Checkout) -> None:
@@ -715,7 +717,7 @@ def test_any_is_counted_once_in_declarations_and_values(repo: Checkout) -> None:
         ("return", "Plain.read"),
         ("variable", "Plain.read"),
     ]
-    assert AnyName.count(ANY_NON_DECLARATIONS.encode(), "values.py") == 3
+    assert AnyName.count(PROJECT, ANY_NON_DECLARATIONS.encode(), "values.py") == 3
 
     base = repo.commit({"declarations.py": "", "values.py": ""})
     head = repo.commit({"declarations.py": ANY_DECLARATIONS, "values.py": ANY_NON_DECLARATIONS})
@@ -853,8 +855,8 @@ def test_changed_argument_still_changes_a_multiline_frozen_write(repo):
 def test_vocabulary_includes_identifiers_comments_and_docstring_lines_only(word):
     source = f'''"""Receipt and {word} share one prose line.\nAdmitted work.\n"""\n# admission\nkey = "admission_generation"\ndef admit_receipt({word.title()}, **clean):\n    return peer.receipt({word.title()}, admission=1)\n'''.encode()
     # Three prose lines; function, parameter, attribute, loaded parameter and keyword.
-    assert BannedVocabulary.count(source, "values.py") == 8
-    assert FrozenFieldWrite.count(b'text = "object.__setattr__(x, y, z)"\n', "values.py") == 0
+    assert BannedVocabulary.count(PROJECT, source, "values.py") == 8
+    assert FrozenFieldWrite.count(PROJECT, b'text = "object.__setattr__(x, y, z)"\n', "values.py") == 0
 
 
 def test_a_frozen_write_counts_except_in_its_own_classes_post_init():
@@ -871,7 +873,7 @@ def __post_init__(self):
 """
     # Only the first write builds the instance; another object, a nested scope, another
     # method and a module-level function of the same name all still count.
-    assert FrozenFieldWrite.count(source, "values.py") == 4
+    assert FrozenFieldWrite.count(PROJECT, source, "values.py") == 4
 
 
 def test_changed_prose_fails_but_an_unchanged_disk_key_does_not(repo):
@@ -887,7 +889,7 @@ def test_changed_prose_fails_but_an_unchanged_disk_key_does_not(repo):
 
 def test_local_import_scope_counts_nested_functions_and_classes_once():
     source = b"""import top\nclass ModuleClass:\n    import top_class\ndef outer():\n    import one\n    class Local:\n        import two\n        def method(self):\n            from package import three\n    async def inner():\n        import four\n"""
-    assert FunctionLocalImport.count(source, "imports.py") == 4
+    assert FunctionLocalImport.count(PROJECT, source, "imports.py") == 4
 
 
 def test_a_new_enum_fails_the_ratchet_and_folding_one_passes(repo):
@@ -904,14 +906,14 @@ def test_a_new_enum_fails_the_ratchet_and_folding_one_passes(repo):
 
 def test_enum_declarations_count_every_stdlib_enum_base_and_nothing_else():
     source = b"""import enum\nfrom enum import Enum, StrEnum\nclass A(Enum): pass\nclass B(enum.IntFlag): pass\nclass C(str, StrEnum): pass\nclass Family: pass\nclass Member(Family): pass\ndef local():\n    class D(enum.Flag): pass\n"""
-    assert EnumDeclaration.lines(source, "kinds.py") == [3, 4, 5, 9]
+    assert EnumDeclaration.lines(PROJECT, source, "kinds.py") == [3, 4, 5, 9]
 
 
 def string_identity_readings(source: bytes) -> list[tuple[str, type]]:
     declared = b"class CarryStep: pass\nclass Claimed: pass\ndef carry_hunts(): pass\n"
     spellings = DeclaredSpellings.read(
         {
-            path: DeclaredSpellings.declarations(path, module)
+            path: DeclaredSpellings.declarations(PROJECT, path, module)
             for path, module in [
                 ("tools/carry_hunts.py", declared),
                 ("src/pkg/__init__.py", b""),
@@ -920,7 +922,7 @@ def string_identity_readings(source: bytes) -> list[tuple[str, type]]:
             ]
         }
     )
-    return [(site.spelling, site.reading) for site in spellings.sites(source, "tools/use.py")]
+    return [(site.spelling, site.reading) for site in spellings.sites(PROJECT, source, "tools/use.py")]
 
 
 def test_string_identity_reads_declared_names_compared_kinds_and_named_access():
@@ -1035,7 +1037,7 @@ with contextlib.suppress(ConnectionError, TimeoutError): work()
 with suppress(FileNotFoundError): absent()
 with suppress(Exception): raise RuntimeError()
 """
-    assert BroadSwallow.count(source, "read.py") == 3
+    assert BroadSwallow.count(PROJECT, source, "read.py") == 3
     before = repo.commit({"reader.py": "work()\n"})
     after = repo.commit({"reader.py": "with suppress(OSError): work()\n"})
     status, report = repo.compare(before, after, BroadSwallow)
@@ -1058,7 +1060,7 @@ def test_broad_handler_carrying_its_error_into_a_typed_outcome_is_not_a_swallow(
     except OSError as error:
         return Missing()
 """
-    assert BroadSwallow.count(source, "read.py") == 2
+    assert BroadSwallow.count(PROJECT, source, "read.py") == 2
 
 
 @pytest.mark.parametrize(('handler', 'expected'), (
@@ -1076,13 +1078,13 @@ def test_broad_handler_transfers_original_error_without_a_success_default(handle
               '    try: qualify()\n'
               '    except (OSError, ValueError) as error:\n'
               f'        {handler}\n').encode()
-    assert BroadSwallow.count(source, 'project.py') == expected
+    assert BroadSwallow.count(PROJECT, source, 'project.py') == expected
 
 
 def test_field_spelling_rosters_count_loops_not_declarations():
     source = b"""fields = ("path", "file_path", "filePath")\nfor key in ("path", "file_path", "filePath"):\n    value = data[key]\nvalue = next(data[key] for key in ("path", "file_path", "filePath") if key in data)\n"""
-    assert ForeignFieldSpellings.count(source, "read.py") == 2
-    assert ForeignFieldSpellings.lines(source, "read.py") == [2, 4]
+    assert ForeignFieldSpellings.count(PROJECT, source, "read.py") == 2
+    assert ForeignFieldSpellings.lines(PROJECT, source, "read.py") == [2, 4]
 
 
 def test_broad_swallow_is_counted_and_cannot_be_added(repo):
@@ -1097,7 +1099,7 @@ except RuntimeError: raise
 try: work()
 except FileNotFoundError: absent()
 """
-    assert BroadSwallow.count(source, "read.py") == 3
+    assert BroadSwallow.count(PROJECT, source, "read.py") == 3
     before = repo.commit({"reader.py": "work()\n"})
     after = repo.commit({"reader.py": "try: work()\nexcept OSError: pass\n"})
     status, report = repo.compare(before, after, BroadSwallow)
@@ -1108,20 +1110,20 @@ except FileNotFoundError: absent()
 
 def test_broad_handlers_only_count_defaults_returned_by_the_handler():
     source = b"""def read():\n    try: work()\n    except Exception:\n        return None\n    try: work()\n    except:\n        if condition: return {}\n    try: work()\n    except OSError:\n        return None\n    try: work()\n    except BaseException:\n        raise\n    try: work()\n    except Exception:\n        def helper(): return None\n        raise\n"""
-    assert BroadExceptDefault.count(source, "read.py") == 2
+    assert BroadExceptDefault.count(PROJECT, source, "read.py") == 2
 
 
 def test_content_cache_prunes_entries_unused_for_the_retention_period():
     """An entry read after it aged survives the prune; one neither written nor read does not."""
-    ContentCache.store(1, "read")
-    ContentCache.store(2, "unused")
-    old = time.time() - (ContentCache.retention_days + 1) * 86400
+    PROJECT.store(1, "read")
+    PROJECT.store(2, "unused")
+    old = time.time() - (PROJECT.retention_days + 1) * 86400
     for name in ("read", "unused"):
-        os.utime(ContentCache.path(name), (old, old))
-    assert ContentCache.stored("read") == (1,)
-    ContentCache.prune()
-    assert ContentCache.stored("read") == (1,)
-    assert ContentCache.stored("unused") == ()
+        os.utime(PROJECT.cached(name), (old, old))
+    assert PROJECT.stored("read") == (1,)
+    PROJECT.prune()
+    assert PROJECT.stored("read") == (1,)
+    assert PROJECT.stored("unused") == ()
 
 
 def test_a_grown_measure_points_at_every_head_site_it_counts(repo):
@@ -1162,8 +1164,8 @@ def test_only_the_asked_measures_are_compared_and_located(repo):
          "else:\n    from .b import B\n", [5]),
         ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    if True:\n        from .a import A\n", [4]),
         ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from .a import A\nelse:\n    from .a import A\n", [3]),
-        # typeshed's checker-only package has no runtime module: the guard is its one home.
-        ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from _typeshed import DataclassInstance\n", []),
+        # A checker-only stub package counts too: the count is the source's, not the venv's.
+        ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from _typeshed import DataclassInstance\n", [3]),
         # A name that is not typing's declaration guards nothing, whatever it is spelled.
         ("TYPE_CHECKING = False\nif TYPE_CHECKING:\n    from .a import A\n", []),
         ("from elsewhere import TYPE_CHECKING\nif TYPE_CHECKING:\n    from .a import A\n", []),
@@ -1171,7 +1173,7 @@ def test_only_the_asked_measures_are_compared_and_located(repo):
     ],
 )
 def test_type_checking_imports_resolve_the_guard_through_typing_bindings(source, expected):
-    assert TypeCheckingImport.lines(source.encode(), "src/pkg/module.py") == expected
+    assert TypeCheckingImport.lines(PROJECT, source.encode(), "src/pkg/module.py") == expected
 
 
 # src/agent_comms/field_codec.py at agent-comms 4ca5c1971, lines 45-56.
@@ -1190,9 +1192,9 @@ if TYPE_CHECKING:
 '''
 
 
-def test_type_checking_imports_count_the_real_field_codec_guard_without_typeshed():
+def test_type_checking_imports_count_every_name_of_the_real_field_codec_guard():
     source = "from typing import TYPE_CHECKING\n" + FIELD_CODEC_GUARD
-    assert TypeCheckingImport.lines(source.encode(), "src/agent_comms/field_codec.py") == [13]
+    assert TypeCheckingImport.lines(PROJECT, source.encode(), "src/agent_comms/field_codec.py") == [11, 13]
 
 
 # agent-comms 9396a9251 moved the guarded Coordination import from private_runtime_schema.py
@@ -1221,3 +1223,19 @@ def test_a_guarded_import_moved_into_another_file_grows_that_file(repo: Checkout
                                         for line in (4, 5, 6)]}
     # Removing a guarded import is never growth: the existing ones are measured, not remediated.
     assert repo.compare(head, repo.commit({"cohort_schema.py": COHORT_BEFORE}), TypeCheckingImport)[0] == 0
+
+
+def test_a_moved_file_reports_only_the_findings_its_move_added():
+    """The base's findings of a moved file are matched at its head path, as its counts are."""
+    moved = ChangedPaths(frozenset({"old.py", "new.py"}), (("old.py", "new.py"),))
+    kept, added = CheckerSite("new.py", 1, "kept"), CheckerSite("new.py", 2, "added")
+    results = [(BaseSide, (CheckerSite("old.py", 1, "kept"),)), (HeadSide, (kept, added))]
+    grown = TypeErrors.at("new.py")
+    assert TypeErrors.grown_sites(results, {grown: 1}, moved) == {grown: [added]}
+
+
+def test_an_abstract_intermediate_claims_no_name_and_the_syntax_runner_is_no_measure():
+    """ABC abstractness is the family's one declaration of a non-member."""
+    assert CleanChangedLines not in Measure.members()
+    assert all(not inspect.isabstract(member) for member in Measure.members())
+    assert not issubclass(SyntaxPasses, Measure)

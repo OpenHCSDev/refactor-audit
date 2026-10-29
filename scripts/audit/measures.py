@@ -14,7 +14,7 @@ import collections
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from functools import cache, lru_cache
+from functools import lru_cache
 from typing import ClassVar
 
 from .family import Family
@@ -22,6 +22,16 @@ from .family import Family
 
 class Headline:
     """Capability: the measures behind the headline density."""
+
+
+class MechanismOwners:
+    """Capability: what a census asks of the repository it measures, which modules own the
+    codec and schema mechanism that measures of their pattern exempt. A repository that
+    declares no project declares no such module, so every module is measured; a project
+    names its own."""
+
+    def owns_mechanism(self, path: str) -> bool:
+        return False
 
 
 class Measure(Family, ABC, root=True):
@@ -41,7 +51,8 @@ class NodeCount(ABC):
         """This node's contribution, excluding its descendants."""
 
     @classmethod
-    def admits(cls, path: str) -> bool:
+    def admits(cls, repo: MechanismOwners, path: str) -> bool:
+        """Whether the measure reads this file of the repository."""
         return True
 
 
@@ -51,7 +62,7 @@ def parsed(source: bytes, filename: str) -> ast.Module:
     return ast.parse(source, filename)
 
 
-class PatternMeasure(Measure, NodeCount, abstract=True):
+class PatternMeasure(Measure, NodeCount):
     """A measure that counts one per matching node."""
 
     @classmethod
@@ -110,18 +121,6 @@ def _is_self(node: ast.expr) -> bool:
 
 
 
-class StringKeySubscript(PatternMeasure, Headline):
-    weight = 1
-    node_types = (ast.Subscript,)
-
-    @classmethod
-    def matches(cls, node: ast.AST) -> bool:
-        match node:
-            case ast.Subscript(slice=ast.Constant(value=str())):
-                return True
-        return False
-
-
 class LiteralKeyGet(PatternMeasure):
     weight = 1
     node_types = (ast.Call,)
@@ -144,19 +143,6 @@ class StringEquality(Measure, NodeCount):
             case ast.Compare(ops=ops, comparators=comparators):
                 return sum(1 for op, cmp in zip(ops, comparators)
                            if isinstance(op, (ast.Eq, ast.NotEq)) and _is_string_constant(cmp))
-        return 0
-
-
-class NoneIdentity(Measure, NodeCount):
-    weight = 1
-    node_types = (ast.Compare,)
-
-    @classmethod
-    def occurrences(cls, node: ast.AST) -> int:
-        match node:
-            case ast.Compare(ops=ops, comparators=comparators):
-                return sum(1 for op, cmp in zip(ops, comparators)
-                           if isinstance(op, (ast.Is, ast.IsNot)) and _is_none_constant(cmp))
         return 0
 
 
@@ -192,18 +178,6 @@ class GetattrDefault(PatternMeasure):
     def matches(cls, node: ast.AST) -> bool:
         match node:
             case ast.Call(func=ast.Name(id="getattr"), args=[_, ast.Constant(value=str()), _]):
-                return True
-        return False
-
-
-class BroadExcept(PatternMeasure):
-    weight = 2
-    node_types = (ast.ExceptHandler,)
-
-    @classmethod
-    def matches(cls, node: ast.AST) -> bool:
-        match node:
-            case ast.ExceptHandler(type=None) | ast.ExceptHandler(type=ast.Name(id="Exception" | "BaseException")):
                 return True
         return False
 
@@ -250,27 +224,9 @@ class AbstractBase(PatternMeasure):
         return False
 
 
-class EnumClass(PatternMeasure):
-    node_types = (ast.ClassDef,)
-
-    @classmethod
-    def matches(cls, node: ast.AST) -> bool:
-        match node:
-            case ast.ClassDef(bases=bases):
-                return any(_base_name(base).endswith(("Enum", "Flag")) for base in bases)
-        return False
-
-
 def _is_string_constant(node: ast.AST) -> bool:
     match node:
         case ast.Constant(value=str()):
-            return True
-    return False
-
-
-def _is_none_constant(node: ast.AST) -> bool:
-    match node:
-        case ast.Constant(value=None):
             return True
     return False
 
@@ -282,8 +238,9 @@ def _base_name(node: ast.AST) -> str:
     return ""
 
 
-@cache
 def _dispatch() -> dict[type[ast.AST], tuple[type[Measure], ...]]:
+    """The census's node table, read from the family each time it runs, so a measure declared
+    after an earlier run is counted too."""
     table: dict[type[ast.AST], list[type[Measure]]] = collections.defaultdict(list)
     for measure in Measure.members_with(NodeCount):
         for node_type in measure.node_types:
@@ -354,7 +311,7 @@ def code_lines(text: str) -> int:
     return sum(1 for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#"))
 
 
-def measure_source(path: str, text: str) -> ParseOutcome:
+def measure_source(repo: MechanismOwners, path: str, text: str) -> ParseOutcome:
     lines = code_lines(text)
     try:
         tree = ast.parse(text)
@@ -364,7 +321,7 @@ def measure_source(path: str, text: str) -> ParseOutcome:
     tally = Tally(code_lines=lines)
     for node in ast.walk(tree):
         for measure in dispatch.get(type(node), ()):
-            if measure.admits(path):
+            if measure.admits(repo, path):
                 tally.counts[measure] += measure.occurrences(node)
     return Measured(path, lines, tally)
 

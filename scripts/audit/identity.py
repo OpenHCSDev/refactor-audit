@@ -21,7 +21,7 @@ from metaclass_registry.mro_dispatch import MroDispatch, handles
 from .dispatch import TypeTests
 from .project import Project
 from .ratchet import Counts, InventoryMeasure, PerFileMeasure
-from .repository import ChangedPaths, Repository
+from .repository import ChangedPaths
 
 
 class IdentityReading:
@@ -207,7 +207,7 @@ class DeclaredSpellings:
         return {path: cls.dotted_name(Path(path).with_suffix(""), packages) for path in paths}
 
     @classmethod
-    def declarations(cls, path: str, source: bytes) -> ModuleDeclarations:
+    def declarations(cls, repo: Project, path: str, source: bytes) -> ModuleDeclarations:
         tree = ast.parse(source, path)
         functions = (node.name for node in tree.body
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
@@ -271,11 +271,11 @@ class DeclaredSpellings:
                     exempt.update(map(id, ast.walk(node)))
         return exempt
 
-    def sites(self, source: bytes, filename: str) -> list[IdentitySite]:
+    def sites(self, repo: Project, source: bytes, filename: str) -> list[IdentitySite]:
         tree = ast.parse(source, filename)
         exempt = self.exempt(tree)
         found: dict[int, IdentitySite] = {}
-        selecting_calls = Project.measured().selecting_calls()
+        selecting_calls = repo.selecting_calls()
 
         def record(literal: ast.AST, reading: type[IdentityReading], target: str) -> None:
             if (isinstance(literal, ast.Constant) and isinstance(literal.value, str)
@@ -331,17 +331,17 @@ class StringIdentity(InventoryMeasure[ModuleDeclarations]):
     """
 
     @classmethod
-    def inventory(cls, repo: Repository, ref: str, root: str) -> frozenset[str]:
+    def inventory(cls, repo: Project, ref: str, root: str) -> frozenset[str]:
         return repo.production_paths(ref)
 
     reading = DeclaredSpellings.declarations
 
     @classmethod
-    def measured(cls, repo: Repository, ref: str, base: str, head: str,
+    def measured(cls, repo: Project, ref: str, base: str, head: str,
                  readings: dict[str, ModuleDeclarations], root: str) -> Counts:
         spellings = DeclaredSpellings.read(readings)
         selected = readings.keys() & ChangedPaths.of(repo, base, head).touched
-        return {cls.at(path): len(spellings.sites(source, path))
+        return {cls.at(path): len(spellings.sites(repo, source, path))
                 for path, source in repo.sources(ref, selected)}
 
     align = PerFileMeasure.align
@@ -395,13 +395,13 @@ class OwnTypeTest(InventoryMeasure[ModuleDeclarations]):
     """
 
     @classmethod
-    def inventory(cls, repo: Repository, ref: str, root: str) -> frozenset[str]:
+    def inventory(cls, repo: Project, ref: str, root: str) -> frozenset[str]:
         return repo.production_paths(ref)
 
     reading = DeclaredSpellings.declarations
 
     @classmethod
-    def measured(cls, repo: Repository, ref: str, base: str, head: str,
+    def measured(cls, repo: Project, ref: str, base: str, head: str,
                  readings: dict[str, ModuleDeclarations], root: str) -> Counts:
         declared = {name for module in readings.values() for name, _ in module.classes}
         # A script outside every package, such as one in tools, is imported by its stem.

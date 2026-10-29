@@ -16,8 +16,11 @@ from pathlib import Path
 from typing import ClassVar, Iterator, Self
 
 from .chain_terms import ChainProfile
+from .checkers import GodClassExcess
+from .dispatch import DispatchMeasure, StringDispatch as LiteralDispatch, TypeSwitch
 from .family import Family
-from .repository import GitError, Repository
+from .measures import AttributeByName, LongFunction
+from .repository import Repository
 
 
 # ---------------------------------------------------------------- parsed package
@@ -36,34 +39,22 @@ class ParsedModule:
 
 @dataclass
 class FunctionFacts(ast.NodeVisitor):
-    """What one function compares, reads by key, and type-checks. Collected once per function."""
+    """What one function reads by key and which literal sets it writes. Collected once per
+    function; what it decides case by case is the dispatch measures' (dispatch.py)."""
+    node: ast.FunctionDef | ast.AsyncFunctionDef
     qualname: str
     size: int
-    dispatch: dict[str, set[str]] = field(default_factory=lambda: collections.defaultdict(set))
     keys: dict[str, set[str]] = field(default_factory=lambda: collections.defaultdict(set))
-    type_checks: collections.Counter = field(default_factory=collections.Counter)
     literal_sets: list[tuple[str, ...]] = field(default_factory=list)
     constructed: set[str] = field(default_factory=set)
 
     def visit_Compare(self, node: ast.Compare) -> None:
-        subject = ast.unparse(node.left)[:40]
         for op, comparator in zip(node.ops, node.comparators):
             match op, comparator:
-                case ast.Eq() | ast.NotEq(), ast.Constant(value=str() as value):
-                    self.dispatch[subject].add(value)
                 case ast.In() | ast.NotIn(), ast.Set(elts=elements) | ast.Tuple(elts=elements) | ast.List(elts=elements):
                     values = _string_literals(elements)
                     if values:
-                        self.dispatch[subject].update(values)
                         self.literal_sets.append(values)
-        self.generic_visit(node)
-
-    def visit_Match(self, node: ast.Match) -> None:
-        subject = ast.unparse(node.subject)[:40]
-        for case in node.cases:
-            match case.pattern:
-                case ast.MatchValue(value=ast.Constant(value=str() as value)):
-                    self.dispatch[subject].add(value)
         self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
@@ -79,8 +70,6 @@ class FunctionFacts(ast.NodeVisitor):
         match node:
             case ast.Call(func=ast.Attribute(value=container, attr="get"), args=[ast.Constant(value=str() as key), *_]):
                 self.keys[ast.unparse(container)[:30]].add(key)
-            case ast.Call(func=ast.Name(id="isinstance"), args=[subject, *_]):
-                self.type_checks[ast.unparse(subject)[:30]] += 1
         self.generic_visit(node)
 
 
@@ -133,7 +122,7 @@ class Package:
                 match node:
                     case ast.FunctionDef(name=name, lineno=start, end_lineno=end) | \
                          ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=end):
-                        visitor = FunctionFacts(f"{module.path}::{name}", end - start + 1)
+                        visitor = FunctionFacts(node, f"{module.path}::{name}", end - start + 1)
                         visitor.generic_visit(node)
                         collected.append(visitor)
             facts[module.path] = tuple(collected)
@@ -179,10 +168,7 @@ class Package:
 
     @cached_property
     def entry_points(self) -> frozenset[str]:
-        try:
-            return _entry_points(self.repo.source(self.rev, "pyproject.toml"))
-        except GitError:                        # no pyproject.toml at this revision
-            return frozenset()
+        return _entry_points(self.repo.contents(self.rev, "pyproject.toml").decode())
 
     @cached_property
     def all_text(self) -> str:
@@ -268,7 +254,7 @@ class Finding(Family, ABC, root=True):
         return ""
 
 
-class PerFunctionFinding(Finding, abstract=True):
+class PerFunctionFinding(Finding):
     threshold: ClassVar[int] = 3
 
     @classmethod
@@ -282,18 +268,37 @@ class PerFunctionFinding(Finding, abstract=True):
     def from_facts(cls, facts: FunctionFacts, package: Package) -> Iterator[Self]: ...
 
 
+class DecidedFinding(PerFunctionFinding):
+    """A function's subject decided case by case, as its dispatch measure counts it."""
+
+    @classmethod
+    @abstractmethod
+    def measure(cls) -> type[DispatchMeasure]: ...
+
+    @classmethod
+    @abstractmethod
+    def found(cls, facts: FunctionFacts, subject: ast.AST, cases: frozenset[str]) -> Self: ...
+
+    @classmethod
+    def from_facts(cls, facts: FunctionFacts, package: Package) -> Iterator[Self]:
+        for subject, cases in cls.measure().decided(facts.node):
+            yield cls.found(facts, subject, cases)
+
+
 @dataclass(frozen=True)
-class StringDispatch(PerFunctionFinding, Listed):
-    title = "STRING DISPATCH: one subject compared against several string literals"
+class StringDispatch(DecidedFinding, Listed):
+    title = "STRING DISPATCH: one subject compared against several literals"
     function: str
     subject: str
     values: tuple[str, ...]
 
     @classmethod
-    def from_facts(cls, facts: FunctionFacts, package: Package) -> Iterator[Self]:
-        for subject, values in facts.dispatch.items():
-            if len(values) >= cls.threshold:
-                yield cls(facts.qualname, subject, tuple(sorted(values)))
+    def measure(cls) -> type[DispatchMeasure]:
+        return LiteralDispatch
+
+    @classmethod
+    def found(cls, facts: FunctionFacts, subject: ast.AST, cases: frozenset[str]) -> Self:
+        return cls(facts.qualname, ast.unparse(subject)[:40], tuple(sorted(cases)))
 
     def identity(self) -> tuple:
         return (self.family_name, self.function, self.subject)
@@ -306,17 +311,19 @@ class StringDispatch(PerFunctionFinding, Listed):
 
 
 @dataclass(frozen=True)
-class IsinstanceSwitch(PerFunctionFinding, Listed):
-    title = "ISINSTANCE SWITCHES: several type checks on one subject"
+class IsinstanceSwitch(DecidedFinding, Listed):
+    title = "TYPE SWITCHES: several type tests on one subject"
     function: str
     subject: str
     checks: int
 
     @classmethod
-    def from_facts(cls, facts: FunctionFacts, package: Package) -> Iterator[Self]:
-        for subject, checks in facts.type_checks.items():
-            if checks >= cls.threshold:
-                yield cls(facts.qualname, subject, checks)
+    def measure(cls) -> type[DispatchMeasure]:
+        return TypeSwitch
+
+    @classmethod
+    def found(cls, facts: FunctionFacts, subject: ast.AST, cases: frozenset[str]) -> Self:
+        return cls(facts.qualname, ast.unparse(subject)[:30], len(cases))
 
     def identity(self) -> tuple:
         return (self.family_name, self.function, self.subject)
@@ -404,7 +411,7 @@ class RawShape(PerFunctionFinding, Listed):
         return f"(bypassing an existing class: {sum(1 for f in findings if f.model.bypasses)}; hand-mapped into one: {hand_mapped})"
 
 
-class PerNodeFinding(Finding, abstract=True):
+class PerNodeFinding(Finding):
     @classmethod
     def detect(cls, package: Package) -> Iterator[Self]:
         for module in package.modules:
@@ -440,7 +447,7 @@ class NamedAttribute(PerNodeFinding):
     @classmethod
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
-            case ast.Call(func=ast.Name(id="getattr" | "hasattr"), args=[_, ast.Constant(value=str() as name), *_], lineno=line):
+            case ast.Call(args=[_, ast.Constant(value=str() as name), *_], lineno=line) if AttributeByName.matches(node):
                 yield cls(f"{module.path}:{line}", name)
 
     def identity(self) -> tuple:
@@ -483,17 +490,21 @@ class LongCondition(PerNodeFinding, Listed):
 
 
 @dataclass(frozen=True)
-class GodObject(PerNodeFinding, Listed, abstract=True):
+class GodObject(PerNodeFinding, Listed):
     qualname: str
     size: int
-    threshold: ClassVar[int]
     node_types: ClassVar[tuple[type[ast.AST], ...]]
+
+    @classmethod
+    @abstractmethod
+    def threshold(cls) -> int:
+        """The most lines one declaration may span, owned by the measure of its size."""
 
     @classmethod
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         if isinstance(node, cls.node_types):
             size = node.end_lineno - node.lineno + 1
-            if size > cls.threshold:
+            if size > cls.threshold():
                 yield cls(f"{module.path}::{node.name}", size)
 
     def identity(self) -> tuple:
@@ -512,19 +523,25 @@ class GodObject(PerNodeFinding, Listed, abstract=True):
 
 @dataclass(frozen=True)
 class GodClass(GodObject):
-    title = "GOD CLASSES (over 500 lines)"
-    threshold = 500
+    title = f"GOD CLASSES (over {GodClassExcess.threshold} lines)"
     node_types = (ast.ClassDef,)
+
+    @classmethod
+    def threshold(cls) -> int:
+        return GodClassExcess.threshold
 
 
 @dataclass(frozen=True)
 class GodFunction(GodObject):
-    title = "GOD FUNCTIONS (over 100 lines)"
-    threshold = 100
+    title = f"GOD FUNCTIONS (over {LongFunction.lines} lines)"
     node_types = (ast.FunctionDef, ast.AsyncFunctionDef)
 
+    @classmethod
+    def threshold(cls) -> int:
+        return LongFunction.lines
 
-class PerLineFinding(Finding, abstract=True):
+
+class PerLineFinding(Finding):
     pattern: ClassVar[re.Pattern]
 
     @classmethod

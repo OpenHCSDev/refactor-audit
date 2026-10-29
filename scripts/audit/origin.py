@@ -73,9 +73,8 @@ class DirectCommit(ModuleOrigin):
 
 def origin_of(repo: Repository, rev: str, path: str) -> ModuleOrigin:
     """The first-parent commit that added the path: when the code became visible on the main line."""
-    log = repo.git("log", "--first-parent", "--diff-filter=A", "--format=%ct%x00%s", rev, "--", path).splitlines()
-    timestamp, _, subject = log[-1].partition("\x00")
-    return decode_origin(int(timestamp), subject)
+    added = repo.added_at(rev, path)
+    return decode_origin(added.time, added.subject)
 
 
 def decode_origin(merged_at: int, subject: str) -> ModuleOrigin:

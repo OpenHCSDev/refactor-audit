@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import copy
 import dataclasses
 import enum
 import fcntl
@@ -20,11 +21,12 @@ from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from .findings import Package, ParsedModule, RawShape
 from .identity import TypePositions
-from .measures import ForeignAbsenceSyntax, ForeignAttributeProbe, Headline, NodeCount
+from .measures import (ForeignAbsenceSyntax, ForeignAttributeProbe, Headline, Measure,
+                       MechanismOwners, NodeCount, PatternMeasure)
 from .project import Project
 from .ratchet import (CleanChangedLines, LocatedSource, NamePosition, OccurrenceMeasure,
                       PerFileMeasure, PerFileOccurrenceMeasure, RosterPosition)
-from .repository import ChangedSource, Repository
+from .repository import ChangedSource
 
 
 class MetadataKeys(ast.NodeVisitor):
@@ -48,7 +50,7 @@ class StringFieldMetadata(PerFileOccurrenceMeasure):
     """
 
     @staticmethod
-    def sites(tree: ast.AST, filename: str) -> Iterator[ast.AST]:
+    def sites(repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
         binding = DecoratorBinding.of(dataclasses.field, tree, filename)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and binding.marks(node.func):
@@ -71,7 +73,7 @@ class PlainStrIdAnnotation(PerFileOccurrenceMeasure):
     """ID-shaped fields and parameters retain their nominal kind instead of plain str."""
 
     @staticmethod
-    def sites(tree: ast.AST, filename: str) -> Iterator[ast.AST]:
+    def sites(repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
         for node in ast.walk(tree):
             match node:
                 case ast.AnnAssign(
@@ -136,7 +138,7 @@ class FrozenFieldWrite(CleanChangedLines, PerFileOccurrenceMeasure):
     construction: typing.ClassVar[str] = "__post_init__"
 
     @classmethod
-    def sites(cls, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
+    def sites(cls, repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
         constructing = {id(write) for node in ast.walk(tree) for write in cls.constructing(node)}
         return (node for node in ast.walk(tree) if id(node) not in constructing)
 
@@ -195,14 +197,15 @@ class BannedVocabulary(CleanChangedLines, PerFileOccurrenceMeasure):
         return frozenset(found)
 
     @classmethod
-    def lines(cls, source: bytes, filename: str) -> list[int]:
+    def lines(cls, repo: Project, source: bytes, filename: str) -> list[int]:
         module = ChangedSource(filename, source, frozenset(), b"")
-        return sorted([*super().lines(source, filename), *cls.prose_lines(module)])
+        return sorted([*super().lines(repo, source, filename), *cls.prose_lines(module)])
 
     @classmethod
-    def changed_sites(cls, source: ChangedSource, departed: Counter[tuple[str, str]]) -> list[int]:
+    def changed_sites(cls, repo: Project, source: ChangedSource,
+                      departed: Counter[tuple[str, str]]) -> list[int]:
         prose = cls.prose_lines(source) & source.lines
-        return [*super().changed_sites(source, departed), *prose]
+        return [*super().changed_sites(repo, source, departed), *prose]
 
 
 @dataclass(frozen=True)
@@ -293,9 +296,9 @@ class NoneAbsence(CleanChangedLines, PerFileOccurrenceMeasure):
     """
 
     @classmethod
-    def sites(cls, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
+    def sites(cls, repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
         markers = [DecoratorBinding.of(decoder, tree, filename)
-                   for decoder in Project.measured().absence_decoders()]
+                   for decoder in repo.absence_decoders()]
         pending = [tree]
         while pending:
             node = pending.pop()
@@ -314,14 +317,28 @@ class NoneAbsence(CleanChangedLines, PerFileOccurrenceMeasure):
         spelling.dispatch_sync(node)
         return spelling.found
 
+
+class NoneIdentity(Measure, NodeCount):
+    """``is None`` and ``is not None`` tests, read by NoneSpelling's own comparison arm."""
+
+    weight = 1
+    node_types = (ast.Compare,)
+
+    @classmethod
+    def occurrences(cls, node: ast.AST) -> int:
+        spelling = NoneSpelling()
+        spelling.identity(typing.cast(ast.Compare, node))
+        return spelling.found
+
+
 class RawRecordShapes(PerFileMeasure):
     """Reuse the overlay's raw-shape detector for every production file."""
 
     @classmethod
-    def count(cls, source: bytes, filename: str) -> int:
+    def count(cls, repo: Project, source: bytes, filename: str) -> int:
         text = source.decode()
         module = ParsedModule(filename, text, cls.tree(source, filename), filename)
-        package = Package(Repository(Path.cwd()), "", filename, (module,), ())
+        package = Package(repo, "", filename, (module,), ())
         return sum(1 for facts in package.functions[filename]
                    for _finding in RawShape.from_facts(facts, package))
 
@@ -343,25 +360,29 @@ class FunctionLocalImport(PerFileMeasure, LocatedSource):
             self.depth -= nested
 
     @classmethod
-    def lines(cls, source: bytes, filename: str) -> list[int]:
+    def lines(cls, repo: Project, source: bytes, filename: str) -> list[int]:
         collector = cls.Collector()
         collector.visit(cls.tree(source, filename))
         return collector.found
 
 
-class EnumDeclaration(PerFileMeasure, LocatedSource):
+class EnumDeclaration(PerFileOccurrenceMeasure, NodeCount):
     """Classes built on the standard enum types: a family whose members cannot own their
-    behaviour, so every case is decided by a switch outside it."""
+    behaviour, so every case is decided by a switch outside it. A subclass of a project's own
+    enum is counted where that enum is declared."""
 
+    node_types = (ast.ClassDef,)
     bases: typing.ClassVar[frozenset[str]] = frozenset(
         name for name, value in vars(enum).items()
         if isinstance(value, type) and issubclass(value, enum.Enum))
 
-    @classmethod
-    def lines(cls, source: bytes, filename: str) -> list[int]:
-        return [node.lineno for node in ast.walk(cls.tree(source, filename))
-                if isinstance(node, ast.ClassDef)
-                and any(ast.unparse(base).rpartition(".")[2] in cls.bases for base in node.bases)]
+    @staticmethod
+    def occurrences(node: ast.AST) -> int:
+        match node:
+            case ast.ClassDef(bases=bases):
+                return int(any(ast.unparse(base).rpartition(".")[2] in EnumDeclaration.bases
+                               for base in bases))
+        return 0
 
 
 class ForeignFieldSpellings(PerFileOccurrenceMeasure):
@@ -419,6 +440,20 @@ class BroadExceptDefault(PerFileOccurrenceMeasure):
     def occurrences(cls, node: ast.AST) -> int:
         return int(isinstance(node, ast.ExceptHandler) and cls.broad(node.type)
                    and any(cls.returns_default(statement) for statement in node.body))
+
+
+class BroadExcept(PatternMeasure):
+    """A handler that catches every error: no type, or one of BroadExceptDefault's names."""
+
+    weight = 2
+    node_types = (ast.ExceptHandler,)
+
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        match node:
+            case ast.ExceptHandler(type=caught):
+                return BroadExceptDefault.broad(caught)
+        return False
 
 
 class BroadSwallow(CleanChangedLines, BroadExceptDefault):
@@ -501,6 +536,8 @@ class FamilyFlattened(PerFileMeasure, NodeCount):
     not behavior. Consumers comparing strings to choose behavior are still sites.
     Module context distinguishes those roles and admits unique literal bindings;
     dynamic/imported values remain outside this syntactic collector's proof scope.
+    The census and the ratchet take one count: the module as FlatteningProjection reads it,
+    plus its codec detours, in every module but the project's mechanism modules.
     """
     node_types = (ast.Module,)
     weight = 3
@@ -598,29 +635,27 @@ class FamilyFlattened(PerFileMeasure, NodeCount):
         return tuple(found)
 
     @classmethod
-    def occurrences(cls, node: ast.AST) -> int:
-        return len(cls.flattened(node))
+    def admits(cls, repo: MechanismOwners, path: str) -> bool:
+        return not repo.owns_mechanism(path)
 
     @classmethod
-    def count(cls, source: bytes, filename: str) -> int:
-        """The ratchet's per-file count: the module as FlatteningProjection reads it, plus its
-        codec detours. Only the exact repository paths of the project's mechanism modules own
-        codec and schema behaviour; nested package tails do not."""
-        project = Project.measured()
-        if Path(filename) in project.mechanism_modules():
-            return 0
-        projection = FlatteningProjection(project.codec_names())
-        tree = projection.visit(ast.parse(source, filename))
-        return cls.occurrences(tree) + projection.round_trips
+    def occurrences(cls, node: ast.AST) -> int:
+        # The projection rewrites the module it reads, and the census and the syntax passes
+        # share one parsed tree, so it reads a copy.
+        projection = FlatteningProjection()
+        return len(cls.flattened(projection.visit(copy.deepcopy(node)))) + projection.round_trips
+
+    @classmethod
+    def count(cls, repo: Project, source: bytes, filename: str) -> int:
+        return cls.occurrences(cls.tree(source, filename)) if cls.admits(repo, filename) else 0
 
 
 class FlatteningProjection(ast.NodeTransformer):
-    """A module as the ratchet's FamilyFlattened reads it. A declaration's own identity name
-    read on itself is identity, not transport; the interpreter's entry guard names no family;
-    and a codec's decode of its own encode is a detour, counted once and removed."""
+    """A module as FamilyFlattened reads it. A declaration's own identity name read on itself
+    is identity, not transport; the interpreter's entry guard names no family; and a codec's
+    decode of its own encode is a detour, counted once and removed."""
 
-    def __init__(self, codecs: frozenset[str]) -> None:
-        self.codecs = codecs
+    def __init__(self) -> None:
         self.owners: list[str] = []
         self.round_trips = 0
 
@@ -654,7 +689,7 @@ class FlatteningProjection(ast.NodeTransformer):
                     func=ast.Attribute(value=ast.Name(id=encoder), attr="encode"),
                     args=[_], keywords=[],
                 )], keywords=[],
-            ) if decoder == encoder and decoder in self.codecs:
+            ) if decoder == encoder:
                 self.round_trips += 1
                 return ast.copy_location(ast.Constant(value=None), node)
         return self.generic_visit(node)
@@ -754,19 +789,23 @@ class StoreLockCalls(PerFileOccurrenceMeasure):
         {(fcntl.__name__, fcntl.flock.__name__)})
 
     @classmethod
-    def lines(cls, source: bytes, filename: str) -> list[int]:
-        owned = filename.endswith(Project.measured().lock_owners())
-        return [] if owned else super().lines(source, filename)
+    def sites(cls, repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
+        """The lock calls, none inside a module that owns locking."""
+        if filename.endswith(repo.lock_owners()):
+            return
+        functions = repo.lock_functions()
+        for node in ast.walk(tree):
+            match node:
+                case ast.Call(func=ast.Attribute(value=ast.Name(id=owner), attr=name)) if (
+                        (owner, name) in cls.qualified):
+                    yield node
+                case ast.Call(func=ast.Attribute(attr=name)) | ast.Call(
+                        func=ast.Name(id=name)) if name in functions:
+                    yield node
 
     @staticmethod
     def occurrences(node: ast.AST) -> int:
-        match node:
-            case ast.Call(func=ast.Attribute(value=ast.Name(id=owner), attr=name)) if (
-                    (owner, name) in StoreLockCalls.qualified):
-                return 1
-            case ast.Call(func=ast.Attribute(attr=name)) | ast.Call(func=ast.Name(id=name)):
-                return int(name in Project.measured().lock_functions())
-        return 0
+        return 1
 
 
 class UnannotatedParameter(PerFileOccurrenceMeasure):

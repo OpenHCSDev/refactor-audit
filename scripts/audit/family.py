@@ -2,9 +2,9 @@
 
 A family root is declared with ``root=True``. Every concrete member registers under a name
 derived from its class name (snake case, minus the family's affix). ``name=`` is only for
-spellings an external format dictates (git's status letters, for example). Intermediate
-classes that group members declare ``abstract=True`` and do not register; a class with an
-unimplemented abstract method is never a member either, whatever it declares.
+spellings an external format dictates (git's status letters, for example). A class with an
+unimplemented abstract method is an intermediate that groups members, never a member: its
+ABC abstractness is the one declaration, read whenever the family is read.
 """
 from __future__ import annotations
 
@@ -22,30 +22,36 @@ class UnknownMember(LookupError):
 
 
 class Family:
-    _registry: ClassVar[dict[str, type["Family"]]]
+    _declared: ClassVar[list[type["Family"]]]
     _affix: ClassVar[str]
     family_name: ClassVar[str]
 
-    def __init_subclass__(cls, *, root: bool = False, abstract: bool = False, affix: str = "",
+    def __init_subclass__(cls, *, root: bool = False, affix: str = "",
                           name: str | None = None, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         if root:
-            cls._registry = {}
+            cls._declared = []
             cls._affix = affix
             return
-        if abstract:
-            return
         cls.family_name = name or snake_case(cls.__name__.removesuffix(cls._affix))
-        clash = cls._registry.get(cls.family_name)
-        if clash is not None:
-            raise TypeError(f"{cls.__name__} and {clash.__name__} both claim the name {cls.family_name!r}")
-        cls._registry[cls.family_name] = cls
+        cls._declared.append(cls)
+
+    @classmethod
+    def _named(cls) -> dict[str, type[Family]]:
+        # ABCMeta records abstract methods after __init_subclass__, so abstractness is read
+        # here, when the family is read, and only members claim a name.
+        named: dict[str, type[Family]] = {}
+        for member in cls._declared:
+            if not inspect.isabstract(member):
+                clash = named.setdefault(member.family_name, member)
+                if clash is not member:
+                    raise TypeError(f"{member.__name__} and {clash.__name__} both claim the name "
+                                    f"{member.family_name!r}")
+        return named
 
     @classmethod
     def members(cls) -> tuple[type[Self], ...]:
-        # ABCMeta records abstract methods after __init_subclass__, so they are read here.
-        return tuple(member for member in cls._registry.values()
-                     if issubclass(member, cls) and not inspect.isabstract(member))
+        return tuple(member for member in cls._named().values() if issubclass(member, cls))
 
     @classmethod
     def members_with(cls, capability: type) -> tuple[type[Self], ...]:
@@ -53,11 +59,11 @@ class Family:
 
     @classmethod
     def declared_position(cls) -> int:
-        return tuple(cls._registry.values()).index(cls)
+        return tuple(cls._named().values()).index(cls)
 
     @classmethod
     def decode(cls, name: str) -> type[Self]:
-        member = cls._registry.get(name)
+        member = cls._named().get(name)
         if member is None or not issubclass(member, cls):
             raise UnknownMember(f"{cls.__name__} has no member named {name!r}")
         return member

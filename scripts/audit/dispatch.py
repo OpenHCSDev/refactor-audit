@@ -11,6 +11,7 @@ from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from .handler_declarations import BuiltinHandlerDeclarations
 from .measures import NodeCount
+from .project import Project
 from .ratchet import PerFileMeasure, PerFileOccurrenceMeasure
 
 
@@ -41,13 +42,20 @@ class DispatchCases(MroDispatch):
 
     def __init__(self) -> None:
         self.cases: dict[str, set[str]] = {}
+        self.subjects: dict[str, ast.AST] = {}
 
     def add(self, subject: ast.AST, case: str) -> None:
-        self.cases.setdefault(ast.dump(subject), set()).add(case)
+        identity = ast.dump(subject)
+        self.subjects.setdefault(identity, subject)
+        self.cases.setdefault(identity, set()).add(case)
+
+    def decided(self) -> tuple[tuple[ast.AST, frozenset[str]], ...]:
+        """Each subject decided case by case, with its cases, screened at the arm minimum."""
+        return tuple((self.subjects[identity], frozenset(cases))
+                     for identity, cases in self.cases.items() if len(cases) >= self.minimum_arms)
 
     def groups(self) -> tuple[frozenset[str], ...]:
-        return tuple(frozenset(cases) for cases in self.cases.values()
-                     if len(cases) >= self.minimum_arms)
+        return tuple(cases for _, cases in self.decided())
 
     def read_function(self, function: ast.AST) -> None:
         pending = list(ast.iter_child_nodes(function))
@@ -150,12 +158,17 @@ class DispatchMeasure(PerFileOccurrenceMeasure, NodeCount):
     def collector(cls) -> DispatchCases: ...
 
     @classmethod
-    def groups(cls, node: ast.AST) -> tuple[frozenset[str], ...]:
+    def decided(cls, node: ast.AST) -> tuple[tuple[ast.AST, frozenset[str]], ...]:
+        """One function's subjects decided case by case; the overlay lists these too."""
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return ()
         collector = cls.collector()
         collector.read_function(node)
-        return collector.groups()
+        return collector.decided()
+
+    @classmethod
+    def groups(cls, node: ast.AST) -> tuple[frozenset[str], ...]:
+        return tuple(cases for _, cases in cls.decided(node))
 
     @classmethod
     def occurrences(cls, node: ast.AST) -> int:
@@ -217,7 +230,7 @@ class BuiltinHandlerTypeSwitch(BuiltinHandlerDeclarations, PerFileMeasure, NodeC
         return cls.count_module(node)
 
     @classmethod
-    def count(cls, source: bytes, filename: str) -> int:
-        if not cls.admits(filename):
+    def count(cls, repo: Project, source: bytes, filename: str) -> int:
+        if not cls.admits(repo, filename):
             return 0
         return cls.count_module(cls.tree(source, filename))
