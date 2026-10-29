@@ -255,7 +255,6 @@ class Finding(Family, ABC, root=True):
 
 
 class PerFunctionFinding(Finding):
-    threshold: ClassVar[int] = 3
 
     @classmethod
     def detect(cls, package: Package) -> Iterator[Self]:
@@ -374,6 +373,7 @@ class Unmodeled(ShapeModel):
 @dataclass(frozen=True)
 class RawShape(PerFunctionFinding, Listed):
     title = "RAW SHAPES: one subject read by several string keys"
+    threshold: ClassVar[int] = 3
     external: ClassVar[re.Pattern] = re.compile(r"environ|\benv\b")
     function: str
     subject: str

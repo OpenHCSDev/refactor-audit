@@ -19,14 +19,14 @@ from pathlib import Path
 from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).parent))
-from audit.census import Census, CountTable, DensityTable  # noqa: E402
+from audit.census import Census, CensusRun, CountTable, DensityTable  # noqa: E402
 from audit.family import Family  # noqa: E402
 from audit.repository import Repository  # noqa: E402
 
 
 @dataclass(frozen=True)
 class Scope:
-    repo: Repository
+    census: CensusRun
     root: str
     rev: str
     excluded: tuple[str, ...]
@@ -35,10 +35,10 @@ class Scope:
         return not path.startswith(self.excluded)
 
     def snapshot(self, rev: str) -> Census:
-        return Census.of(self.repo.measure(rev, p) for p in sorted(self.repo.python_paths(rev, self.root)) if self.includes(p))
+        return Census.of(self.census.measure(rev, p) for p in sorted(self.census.repo.python_paths(rev, self.root)) if self.includes(p))
 
     def changes_since(self, base: str) -> Census:
-        return Census.of(c.delta(self.repo, base, self.rev) for c in self.repo.python_changes(base, self.rev, self.root)
+        return Census.of(c.delta(self.census, base, self.rev) for c in self.census.repo.python_changes(base, self.rev, self.root)
                          if self.includes(c.path))
 
 
@@ -131,7 +131,7 @@ class ForkMode(Mode):
     help = "compare upstream at the merge-base with everything the fork changed since"
 
     def report(self, scope: Scope) -> Report:
-        merge_base = scope.repo.merge_base(scope.rev, self.upstream)
+        merge_base = scope.census.repo.merge_base(scope.rev, self.upstream)
         return ForkReport(merge_base, scope.snapshot(merge_base), scope.changes_since(merge_base))
 
 
@@ -158,7 +158,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
-    scope = Scope(Repository(args.repo), args.root, args.rev, tuple(args.exclude))
+    scope = Scope(CensusRun(Repository(args.repo)), args.root, args.rev, tuple(args.exclude))
     report = args.mode.report(scope)
     print(report.render(args.top))
     if args.json:

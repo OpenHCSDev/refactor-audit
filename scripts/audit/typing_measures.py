@@ -41,7 +41,7 @@ class StringSubscript(OccurrenceMeasure, NodeCount, Headline):
 
     @classmethod
     def occurrences(cls, node: ast.AST) -> int:
-        return len(cls.module_lines(node)) if isinstance(node, ast.Module) else 0
+        return len(cls.module_lines(node))
 
 
 class AnyReference(TypingReference):

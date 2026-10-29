@@ -327,7 +327,9 @@ class NoneIdentity(Measure, NodeCount):
     @classmethod
     def occurrences(cls, node: ast.AST) -> int:
         spelling = NoneSpelling()
-        spelling.identity(typing.cast(ast.Compare, node))
+        match node:
+            case ast.Compare():
+                spelling.identity(node)
         return spelling.found
 
 

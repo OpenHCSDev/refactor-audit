@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .family import Family
-from .measures import Measured, MechanismOwners, ParseOutcome, Tally, Unparsed, measure_source, parsed
+from .measures import Measured, MeasuredRevisions, ParseOutcome, Tally, Unparsed, parsed
 
 
 class GitError(RuntimeError):
@@ -43,7 +43,7 @@ class Commit:
 
 
 @dataclass(frozen=True)
-class Repository(MechanismOwners):
+class Repository:
     path: Path
 
     def _run(self, *args: str, input: bytes = b"") -> bytes:
@@ -161,9 +161,6 @@ class Repository(MechanismOwners):
         return Commit.listed(self._run("log", "--first-parent", "--diff-filter=A", Commit.format,
                                        rev, "--", path))[-1]
 
-    def measure(self, rev: str, path: str) -> ParseOutcome:
-        return measure_source(self, path, self.source(rev, path))
-
     def changes(self, base: str, head: str, root: str = ".") -> tuple[Change, ...]:
         """Each path the change touches under the root, with the moves Git detects."""
         fields = iter(self._run("diff", "--find-renames", "--name-status", "-z", base, head,
@@ -207,10 +204,10 @@ class Change(Family, ABC, root=True):
     def from_paths(cls, paths: list[str]) -> "Change": ...
 
     @abstractmethod
-    def before(self, repo: Repository, base: str) -> ParseOutcome: ...
+    def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome: ...
 
     @abstractmethod
-    def after(self, repo: Repository, rev: str) -> ParseOutcome: ...
+    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome: ...
 
     def touched(self) -> tuple[str, ...]:
         """The paths whose content the change alters."""
@@ -224,9 +221,9 @@ class Change(Family, ABC, root=True):
         """The path this change brings into the tree, if it brings one."""
         return ()
 
-    def delta(self, repo: Repository, base: str, rev: str) -> ParseOutcome:
+    def delta(self, census: MeasuredRevisions, base: str, rev: str) -> ParseOutcome:
         """What this change added: after minus before. Deleting code counts as negative."""
-        before, after = self.before(repo, base), self.after(repo, rev)
+        before, after = self.before(census, base), self.after(census, rev)
         match before, after:
             case Measured(tally=old), Measured(tally=new):
                 return Measured(self.path, after.code_lines, new - old)
@@ -248,11 +245,11 @@ class Added(Change, name="A"):
     def from_paths(cls, paths: list[str]) -> "Added":
         return cls(paths[-1])
 
-    def before(self, repo: Repository, base: str) -> ParseOutcome:
+    def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
         return _absent(self.path)
 
-    def after(self, repo: Repository, rev: str) -> ParseOutcome:
-        return repo.measure(rev, self.path)
+    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome:
+        return census.measure(rev, self.path)
 
     def added(self) -> tuple[str, ...]:
         return (self.path,)
@@ -276,11 +273,11 @@ class Modified(Change, name="M"):
     def from_paths(cls, paths: list[str]) -> "Modified":
         return cls(paths[-1])
 
-    def before(self, repo: Repository, base: str) -> ParseOutcome:
-        return repo.measure(base, self.path)
+    def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
+        return census.measure(base, self.path)
 
-    def after(self, repo: Repository, rev: str) -> ParseOutcome:
-        return repo.measure(rev, self.path)
+    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome:
+        return census.measure(rev, self.path)
 
 
 @dataclass(frozen=True)
@@ -298,11 +295,11 @@ class Renamed(Change, name="R"):
     def from_paths(cls, paths: list[str]) -> "Renamed":
         return cls(paths[0], paths[-1])
 
-    def before(self, repo: Repository, base: str) -> ParseOutcome:
-        return repo.measure(base, self.old)
+    def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
+        return census.measure(base, self.old)
 
-    def after(self, repo: Repository, rev: str) -> ParseOutcome:
-        return repo.measure(rev, self.path)
+    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome:
+        return census.measure(rev, self.path)
 
     def touched(self) -> tuple[str, ...]:
         return (self.old, self.path)
@@ -319,10 +316,10 @@ class Deleted(Change, name="D"):
     def from_paths(cls, paths: list[str]) -> "Deleted":
         return cls(paths[-1])
 
-    def before(self, repo: Repository, base: str) -> ParseOutcome:
-        return repo.measure(base, self.path)
+    def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
+        return census.measure(base, self.path)
 
-    def after(self, repo: Repository, rev: str) -> ParseOutcome:
+    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome:
         return _absent(self.path)
 
 
@@ -352,6 +349,10 @@ class ChangedPaths:
 
     touched: frozenset[str]
     moved: tuple[tuple[str, str], ...]
+
+    def at_head(self, path: str) -> str:
+        """Where a path is at the head: its move's destination, or itself."""
+        return dict(self.moved).get(path, path)
 
     @staticmethod
     @cache

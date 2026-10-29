@@ -89,7 +89,7 @@ class DonePhaseBroken(Compared):
         return dict.fromkeys(broken, 0), broken
 
     @classmethod
-    def failing(cls, repo: Project, commit: str) -> frozenset[type]:
+    def failing[Guard](cls, repo: Project[Guard], commit: str) -> frozenset[type[Guard]]:
         """Each guard not holding at a commit."""
         return repo.memo(partial(repo.failing_guards, commit),
                                  cls.__name__, commit)

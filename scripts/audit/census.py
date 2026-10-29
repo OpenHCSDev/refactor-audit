@@ -1,10 +1,31 @@
 """Aggregates of parse outcomes, and the tables that render them."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar, Iterable
 
-from .measures import Headline, Measure, Measured, NodeCount, ParseOutcome, Tally, Unparsed, interpreter
+from .measures import (Headline, Measure, MeasuredRevisions, MechanismOwners, Measured, NodeCount,
+                       NodeTable, ParseOutcome, Tally, Unparsed, interpreter)
+from .repository import Repository
+
+
+@dataclass(frozen=True)
+class CensusRun(MechanismOwners, MeasuredRevisions):
+    """One census of a repository that declares no project: no module of it owns a mechanism
+    the measures exempt, so every module is measured. Its node table is read from the family
+    once, when the census starts."""
+
+    repo: Repository
+    table: NodeTable = field(default_factory=NodeTable.of_family)
+
+    def owns_mechanism(self, path: str) -> bool:
+        return False
+
+    def read(self, path: str, text: str) -> ParseOutcome:
+        return self.table.measure(self, path, text)
+
+    def measure(self, rev: str, path: str) -> ParseOutcome:
+        return self.read(path, self.repo.source(rev, path))
 
 
 @dataclass(frozen=True)
@@ -39,8 +60,9 @@ class Census:
         return "\n".join(lines) if ranked else ""
 
     def record(self) -> dict[str, object]:
-        return {"tally": self.tally.as_record(),
-                "files": {o.path: o.tally.as_record() for o in self.measured},
+        measures = Measure.members_with(NodeCount)
+        return {"tally": self.tally.as_record(measures),
+                "files": {o.path: o.tally.as_record(measures) for o in self.measured},
                 "unparsed": [o.path for o in self.unparsed]}
 
 

@@ -57,6 +57,12 @@ class HeadSide(Side):
         return head
 
 
+def processors() -> int:
+    """The processors this process may run on. The interpreter answers none when it cannot
+    tell, and one is then all a comparison can count on."""
+    return os.process_cpu_count() or 1
+
+
 class Runner(ABC):
     """What a comparison runs: independent parts in the project's pool, combined into the
     counts at each revision. A measure runs itself unless a shared runner takes its counts."""
@@ -148,7 +154,7 @@ class MeasureCount:
     def text(self) -> str:
         return self.measure.__name__
 
-    def moved(self, moved: dict[str, str]) -> MeasureCount:
+    def moved(self, changed: ChangedPaths) -> MeasureCount:
         """The count at its head path; a total belongs to no path."""
         return self
 
@@ -163,10 +169,9 @@ class MeasureCount:
     @staticmethod
     def paired(counts: Counts, changed: ChangedPaths) -> Counts:
         """Counts at their head paths; a moved file's key zero-filled at its other path adds 0."""
-        moved = dict(changed.moved)
         result: Counts = {}
         for identity, count in counts.items():
-            at = identity.moved(moved)
+            at = identity.moved(changed)
             result[at] = result.get(at, 0) + count
         return result
 
@@ -182,8 +187,8 @@ class FileCount(MeasureCount):
     def text(self) -> str:
         return f"{super().text}:{self.path}"
 
-    def moved(self, moved: dict[str, str]) -> FileCount:
-        return dataclasses.replace(self, path=moved.get(self.path, self.path))
+    def moved(self, changed: ChangedPaths) -> FileCount:
+        return dataclasses.replace(self, path=changed.at_head(self.path))
 
     def warning(self, text: str) -> str:
         return f"::warning file={self.path}::{text}"
@@ -291,7 +296,7 @@ class InventoryReading[Reading](Runner):
               root: str) -> tuple[Callable[[], object], ...]:
         before, after = cls.inventory(repo, base, root), cls.inventory(repo, head, root)
         shared = sorted((before & after) - ChangedPaths.of(repo, base, head).touched)
-        shards = os.process_cpu_count() or 1
+        shards = processors()
         return (partial(cls.read, repo, base, sorted(before.difference(shared))),
                 partial(cls.read, repo, head, sorted(after.difference(shared))),
                 *(partial(cls.read, repo, head, shared[shard::shards]) for shard in range(shards)))
@@ -495,7 +500,7 @@ class SyntaxPasses(InventoryReading[dict[type[CountedSource], int]]):
     @classmethod
     def parts(cls, repo: Project, base: str, head: str, changed: set[str],
               root: str) -> tuple[Callable[[], object], ...]:
-        shards = os.process_cpu_count() or 1
+        shards = processors()
         return tuple(partial(cls.side, side, repo, ref, paths[shard::shards])
                      for side in Side.sides() for ref in (side.ref(base, head),)
                      for paths in (sorted(changed & cls.inventory(repo, ref, root)),)
@@ -679,9 +684,6 @@ def compare(repo: Project, base: str, head: str, root: str, workers: int,
 
     # A pass of a shared runner is measured once, by that runner.
     measures = tuple(dict.fromkeys(measure.run_by() for measure in measured))
-    # The cache key's code digest is taken here, after every measure's import and before the
-    # workers start, so each worker's copy of the project carries it.
-    repo.code
     # Forked workers start from the already-imported measures instead of importing them again.
     with repo.pool(workers) as pool:
         parts = {measure: [pool.submit(part)
@@ -757,7 +759,7 @@ def main(project: Project, arguments: list[str] | None = None) -> int:
     parser.add_argument("--root", required=True, help="Repository-relative production source directory")
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", required=True)
-    parser.add_argument("--workers", type=int, default=os.process_cpu_count() or 1,
+    parser.add_argument("--workers", type=int, default=processors(),
                         help="Pool width; a caller running ratchets in parallel narrows it")
     args = parser.parse_args(arguments)
     return ratchet(project, args.base, args.head, args.root, args.workers)

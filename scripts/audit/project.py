@@ -21,10 +21,10 @@ import typing
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from concurrent.futures import Executor
-from dataclasses import dataclass
-from functools import cached_property
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from .measures import MechanismOwners
 from .repository import Repository
 
 AUDIT_SCRIPTS = Path(__file__).resolve().parents[1]
@@ -48,6 +48,8 @@ class ContentCache(ABC):
     not Textual's commit, and a git dependency moves without changing its version."""
 
     retention_days: typing.ClassVar[int] = 14
+    # The measuring code's digest, part of every key (see measuring_code).
+    code: bytes
 
     @abstractmethod
     def cache_directory(self) -> Path:
@@ -75,13 +77,11 @@ class ContentCache(ABC):
         audited = {path.resolve() for path in (AUDIT_SCRIPTS / "audit").rglob("*.py")}
         return tuple(sorted(loaded | audited))
 
-    @cached_property
-    def code(self) -> bytes:
+    def measuring_code(self) -> bytes:
         """The measuring code (see measuring_sources), and every installed distribution: the
         checkers and everything they read, such as the stack client's Textual. A git install
         keeps its version across commits, so its recorded origin (direct_url.json) is digested
-        too. A comparison reads it once, after the measures' imports and before its workers
-        start, so the set is the one that ran and every worker carries it."""
+        too."""
         digest = hashlib.sha256(f"{sys.version}\0{__name__}".encode())
         for installed in sorted(f"{dist.name}={dist.version}\0{dist.read_text('direct_url.json')}"
                                 for dist in importlib.metadata.distributions()):
@@ -125,8 +125,16 @@ class ContentCache(ABC):
 
 
 @dataclass(frozen=True)
-class Project[Guard](ContentCache, Repository, ABC):
-    """The measured repository and its own facts. Guard is the class of its standing guards."""
+class Project[Guard](ContentCache, MechanismOwners, Repository, ABC):
+    """The measured repository and its own facts. Guard is the class of its standing guards.
+
+    Its measuring code is digested when it is made, after the measures it runs are imported,
+    so every worker a comparison forks carries the same key."""
+
+    code: bytes = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "code", self.measuring_code())
 
     @abstractmethod
     def pool(self, workers: int) -> Executor:

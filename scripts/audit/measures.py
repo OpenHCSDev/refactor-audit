@@ -24,14 +24,20 @@ class Headline:
     """Capability: the measures behind the headline density."""
 
 
-class MechanismOwners:
-    """Capability: what a census asks of the repository it measures, which modules own the
-    codec and schema mechanism that measures of their pattern exempt. A repository that
-    declares no project declares no such module, so every module is measured; a project
-    names its own."""
+class MechanismOwners(ABC):
+    """Capability: which modules own the codec and schema mechanism that measures of their
+    pattern exempt. A measured project names its own; a census of a repository that declares
+    no project answers for itself."""
 
-    def owns_mechanism(self, path: str) -> bool:
-        return False
+    @abstractmethod
+    def owns_mechanism(self, path: str) -> bool: ...
+
+
+class MeasuredRevisions(ABC):
+    """Capability: one file's census at a revision, which a change measures on both sides."""
+
+    @abstractmethod
+    def measure(self, rev: str, path: str) -> ParseOutcome: ...
 
 
 class Measure(Family, ABC, root=True):
@@ -238,14 +244,6 @@ def _base_name(node: ast.AST) -> str:
     return ""
 
 
-def _dispatch() -> dict[type[ast.AST], tuple[type[Measure], ...]]:
-    """The census's node table, read from the family each time it runs, so a measure declared
-    after an earlier run is counted too."""
-    table: dict[type[ast.AST], list[type[Measure]]] = collections.defaultdict(list)
-    for measure in Measure.members_with(NodeCount):
-        for node_type in measure.node_types:
-            table[node_type].append(measure)
-    return {node_type: tuple(measures) for node_type, measures in table.items()}
 
 
 @dataclass
@@ -275,8 +273,8 @@ class Tally:
     def headline(self) -> float:
         return sum(self.density(measure) for measure in Measure.members_with(Headline))
 
-    def as_record(self) -> dict[str, int]:
-        return {measure.family_name: self.counts[measure] for measure in Measure.members_with(NodeCount)} | {"code_lines": self.code_lines}
+    def as_record(self, measures: tuple[type[Measure], ...]) -> dict[str, int]:
+        return {measure.family_name: self.counts[measure] for measure in measures} | {"code_lines": self.code_lines}
 
 
 @dataclass(frozen=True)
@@ -311,19 +309,35 @@ def code_lines(text: str) -> int:
     return sum(1 for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#"))
 
 
-def measure_source(repo: MechanismOwners, path: str, text: str) -> ParseOutcome:
-    lines = code_lines(text)
-    try:
-        tree = ast.parse(text)
-    except SyntaxError as error:
-        return Unparsed(path, lines, str(error))
-    dispatch = _dispatch()
-    tally = Tally(code_lines=lines)
-    for node in ast.walk(tree):
-        for measure in dispatch.get(type(node), ()):
-            if measure.admits(repo, path):
-                tally.counts[measure] += measure.occurrences(node)
-    return Measured(path, lines, tally)
+@dataclass(frozen=True)
+class NodeTable:
+    """The census's measures by the node types they inspect, read from the family once per
+    census, so a census counts every measure declared when it starts."""
+
+    measures: tuple[type[Measure], ...]
+    by_node: dict[type[ast.AST], tuple[type[Measure], ...]]
+
+    @classmethod
+    def of_family(cls) -> NodeTable:
+        measures = Measure.members_with(NodeCount)
+        table: dict[type[ast.AST], list[type[Measure]]] = collections.defaultdict(list)
+        for measure in measures:
+            for node_type in measure.node_types:
+                table[node_type].append(measure)
+        return cls(measures, {node_type: tuple(found) for node_type, found in table.items()})
+
+    def measure(self, owners: MechanismOwners, path: str, text: str) -> ParseOutcome:
+        lines = code_lines(text)
+        try:
+            tree = ast.parse(text)
+        except SyntaxError as error:
+            return Unparsed(path, lines, str(error))
+        tally = Tally(code_lines=lines)
+        for node in ast.walk(tree):
+            for measure in self.by_node.get(type(node), ()):
+                if measure.admits(owners, path):
+                    tally.counts[measure] += measure.occurrences(node)
+        return Measured(path, lines, tally)
 
 
 def interpreter() -> str:

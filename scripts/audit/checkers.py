@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .project import Project
 from .ratchet import (Advisory, BaseSide, Compared, Counts, FileCount, HeadSide, InventoryMeasure,
-                      MeasureCount, MemberCount, Side, Site)
+                      MeasureCount, MemberCount, Side, Site, processors)
 from .repository import ChangedPaths
 
 
@@ -68,13 +68,12 @@ class SideCounts(Compared):
         message: the lines and messages the change added. A moved file's base findings are
         matched at its head path, as its counts are."""
         taken = cls.taken(results)
-        moved = dict(changed.moved)
         grown: dict[MeasureCount, list[Site]] = {}
         for key, change in delta.items():
             if change > 0 and cls.owns(key):
                 subject = typing.cast(FileCount, key).path
                 left = Counter(site.message for site in taken[BaseSide]
-                               if moved.get(site.path, site.path) == subject)
+                               if changed.at_head(site.path) == subject)
                 added = []
                 for site in taken[HeadSide]:
                     if site.path == subject:
@@ -184,7 +183,7 @@ class Unformatted(Advisory, CheckedRevision):
     @staticmethod
     def batches(selected: list[str]) -> list[list[str]]:
         # One run per pool worker: a Black start costs more than checking a file.
-        shards = os.process_cpu_count() or 1
+        shards = processors()
         return [selected[shard::shards] for shard in range(shards)]
 
     @staticmethod

@@ -55,7 +55,7 @@ Two further groups cut across the rungs: **boundaries** (raw data handled everyw
 | `positional_insert` | MEMB-5 | |
 | `embedded_script` | BOUND-5 | TIME-7 for copied defaults inside it |
 | `child_process_site` spread over many modules | IMPL-13 | IDEN-8 |
-| census `type_identity_check`, `string_key_subscript` | BOUND-1 | |
+| census `type_identity`, `string_subscript` | BOUND-1 | |
 | NRA `external_enum_case_recovery` | IMPL-2 | IMPL-11, IMPL-10 |
 
 ## Index of patterns

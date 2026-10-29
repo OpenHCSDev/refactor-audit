@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from audit.census import Census  # noqa: E402
+from audit.census import Census, CensusRun  # noqa: E402
 from audit.dispatch import DispatchMeasure  # noqa: E402
 from audit.measures import Measure, NodeCount, Tally, Unparsed, interpreter  # noqa: E402
 from audit.origin import ModuleOrigin, decode_origin  # noqa: E402
@@ -33,10 +33,10 @@ class MergeReview:
     unparsed: tuple[Unparsed, ...]
 
     @classmethod
-    def of(cls, repo: Repository, sha: str, merged_at: int, subject: str, root: str) -> "MergeReview":
-        census = Census.of(file_change.delta(repo, f"{sha}^1", sha)
-                           for file_change in repo.python_changes(f"{sha}^1", sha, root))
-        return cls(sha, decode_origin(merged_at, subject), census.tally, census.unparsed)
+    def of(cls, census: CensusRun, sha: str, merged_at: int, subject: str, root: str) -> "MergeReview":
+        measured = Census.of(file_change.delta(census, f"{sha}^1", sha)
+                             for file_change in census.repo.python_changes(f"{sha}^1", sha, root))
+        return cls(sha, decode_origin(merged_at, subject), measured.tally, measured.unparsed)
 
     def added(self) -> int:
         return sum(measure.weight * max(0, self.change[measure]) for measure in Measure.members_with(NodeCount))
@@ -59,7 +59,8 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=10)
     args = ap.parse_args()
     repo = Repository(args.repo)
-    reviews = [MergeReview.of(repo, merge.sha, merge.time, merge.subject, args.root)
+    census = CensusRun(repo)
+    reviews = [MergeReview.of(census, merge.sha, merge.time, merge.subject, args.root)
                for merge in repo.merges(args.since, args.rev)]
     failures = [(review, failure) for review in reviews for failure in review.unparsed]
     if failures:
