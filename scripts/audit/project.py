@@ -152,8 +152,9 @@ class Project[Guard](ContentCache, MechanismOwners, Repository, ABC):
         """The project's own lock functions, by name."""
 
     @abstractmethod
-    def absence_decoders(self) -> tuple[Callable[..., object], ...]:
-        """Decorators marking a decoder that meets absence from outside; its body is the boundary."""
+    def absence_boundaries(self) -> tuple[Callable[..., object], ...]:
+        """Decorators marking a boundary where absence meets the outside, a decoder reading
+        foreign values or an encoder writing them; the marked body is the boundary."""
 
     @abstractmethod
     def mechanism_modules(self) -> frozenset[Path]:

@@ -21,6 +21,7 @@ from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from .findings import Package, ParsedModule, RawShape
 from .identity import TypePositions
+from .lexical import DecoratorBinding
 from .measures import (ForeignAbsenceSyntax, ForeignAttributeProbe, Headline, Measure,
                        MechanismOwners, NodeCount, PatternMeasure)
 from .project import Project
@@ -202,46 +203,10 @@ class BannedVocabulary(CleanChangedLines, PerFileOccurrenceMeasure):
         return sorted([*super().lines(repo, source, filename), *cls.prose_lines(module)])
 
     @classmethod
-    def changed_sites(cls, repo: Project, source: ChangedSource,
-                      departed: Counter[tuple[str, str]]) -> list[int]:
+    def changed_sites(cls, repo: Project, source: ChangedSource, departed: Counter[tuple[str, str]],
+                      extracted: Counter[ast.AST]) -> list[int]:
         prose = cls.prose_lines(source) & source.lines
-        return [*super().changed_sites(repo, source, departed), *prose]
-
-
-@dataclass(frozen=True)
-class DecoratorBinding:
-    """The spellings one module binds to a declared decorator, read from its imports alone.
-
-    A decorator of the same name declared or imported from anywhere else marks nothing.
-    """
-
-    names: frozenset[str]
-
-    @classmethod
-    def of(cls, decorator: typing.Callable[..., object], tree: ast.AST,
-           filename: str) -> DecoratorBinding:
-        owner, name = decorator.__module__, decorator.__name__
-        parts = Path(filename).with_suffix("").parts
-        module = parts[1:] if parts[:1] == ("src",) else parts
-        package = module[:-1]
-        names = {name} if ".".join(module) == owner else set()
-        for node in ast.walk(tree):
-            match node:
-                case ast.Import(names=aliases):
-                    names.update(f"{alias.asname or alias.name}.{name}"
-                                 for alias in aliases if alias.name == owner)
-                case ast.ImportFrom(module=source, names=aliases, level=level):
-                    base = package[:len(package) - level + 1] if level else ()
-                    resolved = ".".join((*base, source) if source else base)
-                    for alias in aliases:
-                        if f"{resolved}.{alias.name}" == owner:
-                            names.add(f"{alias.asname or alias.name}.{name}")
-                        if resolved == owner and alias.name == name:
-                            names.add(alias.asname or name)
-        return cls(frozenset(names))
-
-    def marks(self, decorator: ast.expr) -> bool:
-        return ast.unparse(decorator) in self.names
+        return [*super().changed_sites(repo, source, departed, extracted), *prose]
 
 
 class NoneSpelling(MroDispatch):
@@ -290,15 +255,15 @@ class NoneSpelling(MroDispatch):
 class NoneAbsence(CleanChangedLines, PerFileOccurrenceMeasure):
     """Absence spelled as None: ``is None`` tests, annotations that allow None, ``default=None``.
 
-    Absence belongs to a declared null member that answers for itself. A decoder that
-    meets None from outside declares itself with one of the project's absence decorators; its
-    body is not counted.
+    Absence belongs to a declared null member that answers for itself. A boundary that meets
+    None from outside, a decoder reading it or an encoder writing it, declares itself with one
+    of the project's absence boundary decorators; its body is not counted.
     """
 
     @classmethod
     def sites(cls, repo: Project, tree: ast.AST, filename: str) -> Iterator[ast.AST]:
-        markers = [DecoratorBinding.of(decoder, tree, filename)
-                   for decoder in repo.absence_decoders()]
+        markers = [DecoratorBinding.of(boundary, tree, filename)
+                   for boundary in repo.absence_boundaries()]
         pending = [tree]
         while pending:
             node = pending.pop()

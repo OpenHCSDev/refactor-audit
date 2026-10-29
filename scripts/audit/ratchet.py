@@ -14,6 +14,7 @@ import dataclasses
 import json
 import os
 import subprocess
+import symtable
 import sys
 import typing
 from abc import ABC, abstractmethod
@@ -21,12 +22,13 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from concurrent.futures import as_completed
 from dataclasses import dataclass
-from functools import partial
+from functools import cached_property, partial
 from pathlib import Path
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from .family import Family
+from .lexical import DecoratorBinding, NominalProof, ScopeNames, UnprovedIdentity
 from .measures import Measure, parsed
 from .project import AUDIT_SCRIPTS, Project
 from .repository import ChangedPaths, ChangedSource
@@ -108,8 +110,19 @@ class Compared(Measure, Runner):
         return FileCount(cls, path)
 
     @classmethod
-    def blocks(cls, delta: Counts) -> bool:
+    def grown(cls, delta: Counts) -> bool:
+        """Whether any of this measure's counts grew."""
         return any(value > 0 for key, value in delta.items() if cls.owns(key))
+
+    @classmethod
+    def blocks(cls, delta: Counts) -> bool:
+        return cls.grown(delta)
+
+    @classmethod
+    def missing(cls, head: Counts, introduced: dict[FileCount, list[int]]) -> list[MeasureCount]:
+        """This measure's counts the comparison has no required evidence for; a measure that
+        needs none beyond its counts misses nothing."""
+        return []
 
     @classmethod
     def grew(cls, key: MeasureCount, grown: int) -> str:
@@ -531,31 +544,244 @@ class Advisory(Compared):
         return key.warning(f"{cls.__name__} +{grown} (warns, never blocks)")
 
 
-class ScopeNames(ast.NodeVisitor):
-    """Each node's enclosing class and function names, dotted, through the AST's own dispatch."""
+@dataclass(frozen=True)
+class DeclaredClass:
+    """One top-level class of one changed module at one revision, read for its fields, its
+    methods and its direct parents."""
 
-    def __init__(self) -> None:
-        self.found: dict[ast.AST, str] = {}
-        self.scope = ""
+    path: str
+    tree: ast.Module
+    node: ast.ClassDef
 
-    def generic_visit(self, node: ast.AST) -> None:
-        self.found[node] = self.scope
-        super().generic_visit(node)
+    @classmethod
+    def top(cls, path: str, tree: ast.Module) -> dict[str, DeclaredClass]:
+        """The module's classes whose module-level name is still that one declaration."""
+        return {name: cls(path, tree, statement)
+                for name, (_, statement) in DecoratorBinding.declarations(tree, "", tree.body).items()
+                if isinstance(statement, ast.ClassDef)}
 
-    def visit_named(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
-        self.found[node] = outer = self.scope
-        self.scope = f"{outer}.{node.name}"
-        super().generic_visit(node)
-        self.scope = outer
+    @property
+    def scope(self) -> str:
+        return f".{self.node.name}"
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.visit_named(node)
+    @cached_property
+    def fields(self) -> dict[str, ast.AnnAssign]:
+        """The class body's annotated names bound by that annotation alone."""
+        return {name: statement for name, (_, statement) in DecoratorBinding.declarations(
+                    self.tree, self.scope, self.node.body).items()
+                if isinstance(statement, ast.AnnAssign)}
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.visit_named(node)
+    @cached_property
+    def methods(self) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+        """The class body's functions bound by that definition alone."""
+        return {name: statement for name, (_, statement) in DecoratorBinding.declarations(
+                    self.tree, self.scope, self.node.body).items()
+                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)}
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.visit_named(node)
+    def binds(self, name: str) -> bool:
+        """Whether the class scope still binds ``name`` in any form."""
+        return name in DecoratorBinding.bindings(self.tree, self.scope)
+
+    @cached_property
+    def identity(self) -> NominalProof:
+        """This class as its own module's declaration names it."""
+        return DecoratorBinding.identity(self.tree, self.path, self.scope, ast.Name(id=self.node.name))
+
+    def derives(self, parent: DeclaredClass) -> bool:
+        """Whether one direct base resolves to ``parent``. Bases are read from this class's
+        scope, so a base name the class body rebinds proves nothing; a call, a subscript or a
+        name the module binds twice resolves to no class."""
+        return any(DecoratorBinding.identity(self.tree, self.path, self.scope, base).same(parent.identity)
+                   for base in self.node.bases)
+
+    @cached_property
+    def annotated(self) -> DecoratorBinding:
+        return DecoratorBinding.named("typing", "Annotated", self.tree, self.path, self.scope)
+
+    def compared(self, field: str) -> list[ast.expr]:
+        """The field's name, its type without typing.Annotated metadata, and its default."""
+        statement = self.fields[field]
+        match statement.annotation:
+            case ast.Subscript(value=value, slice=ast.Tuple(elts=[declared, *_])) if self.annotated.marks(value):
+                annotation: ast.expr = declared
+            case annotation:
+                pass
+        return [statement.target, annotation, *([statement.value] if statement.value else [])]
+
+    def declared(self, field: str) -> NominalProof:
+        """The field's type and default, each reference resolved to its owner in this class's
+        scope; the name is the field's own and needs no owner."""
+        _, *written = self.compared(field)
+        return DecoratorBinding.identity(self.tree, self.path, self.scope, ast.Tuple(elts=written))
+
+    def holding(self, held: DeclaredClass, base: DeclaredClass) -> tuple[str, ...]:
+        """The fields this class newly declares whose type is the module-level binding of
+        ``held``."""
+        binding = DecoratorBinding.named(
+            ".".join(DecoratorBinding.module_of(held.path)), held.node.name, self.tree, self.path,
+            self.scope)
+        return tuple(name for name, statement in self.fields.items()
+                     if name not in base.fields and binding.marks(statement.annotation))
+
+
+@dataclass(frozen=True)
+class Move:
+    """One declaration proved moved unchanged: its parts in the class it left, paired in walk
+    order with its parts in the class it reached."""
+
+    left: DeclaredClass
+    gave: tuple[ast.AST, ...]
+    reached: DeclaredClass
+    took: tuple[ast.AST, ...]
+
+
+class ProvedMove(Family, ABC, root=True, affix="Move"):
+    """A way the base and head declarations prove occurrences moved rather than written. Each
+    member finds its moves; the family pays each moved occurrence from one departure of the
+    occurrence it was, once, so a retained copy, an extra occurrence or a second copy is still
+    written."""
+
+    @classmethod
+    @abstractmethod
+    def moves(cls, sources: list[ChangedSource], left: list[ChangedSource]) -> Iterator[Move]:
+        """This member's proved moves across the changed modules."""
+
+    @classmethod
+    def credit(cls, repo: Project, measure: type[CleanChangedLines], sources: list[ChangedSource],
+               left: list[ChangedSource], departed: Counter[tuple[str, str]]) -> Counter[ast.AST]:
+        """Each proved destination occurrence's credit; ``departed`` spends what it pays."""
+        credited: Counter[ast.AST] = Counter()
+        for member in cls.members():
+            for move in member.moves(sources, left):
+                cls.transfer(repo, measure, move, departed, credited)
+        return credited
+
+    @staticmethod
+    def transfer(repo: Project, measure: type[CleanChangedLines], move: Move,
+                 departed: Counter[tuple[str, str]], credited: Counter[ast.AST]) -> None:
+        """One move's occurrences, paid one for one by those that left the old declaration.
+        The parts are proved the same, so they pair node for node in walk order; parts whose
+        raw shapes differ pair nothing."""
+        scope = move.left.scope
+        gone = {id(node) for node in measure.sites(repo, move.left.tree, move.left.path)}
+        came = {id(node) for node in measure.sites(repo, move.reached.tree, move.reached.path)}
+        scopes = measure.scopes(move.left.tree)
+        for gave, took in zip(move.gave, move.took, strict=True):
+            before, after = list(ast.walk(gave)), list(ast.walk(took))
+            if [type(node) for node in before] != [type(node) for node in after]:
+                continue
+            for old, new in zip(before, after, strict=True):
+                if ((carried := min(measure.occurrences(old), measure.occurrences(new)))
+                        and id(old) in gone and id(new) in came):
+                    identity = scopes[old], ast.unparse(old)
+                    if identity[0] == scope or identity[0].startswith(f"{scope}."):
+                        paid = min(carried, departed[identity])
+                        departed[identity] -= paid
+                        credited[new] += paid
+
+
+class FieldExtraction(ProvedMove):
+    """Fields a class gave up to the one new class it now holds in a typed field.
+
+    The held field's annotation is the provenance edge: an old class present at both
+    revisions newly declares one field typed as one class absent from the base, and no other
+    old class holds that class. Each field the old class lost, declared once in the new class
+    under the same name with the same type (typing.Annotated metadata aside) and the same
+    default, carries its occurrences there.
+    """
+
+    @classmethod
+    def moves(cls, sources: list[ChangedSource], left: list[ChangedSource]) -> Iterator[Move]:
+        existing = {name for source in [*sources, *left] for name in DeclaredClass.top(
+            source.path, source.base_tree)}
+        new = [held for source in sources
+               for name, held in DeclaredClass.top(source.path, source.tree).items()
+               if name not in existing]
+        edges: list[tuple[DeclaredClass, DeclaredClass, DeclaredClass]] = []
+        for source in sources:
+            before = DeclaredClass.top(source.path, source.base_tree)
+            for name, owner in DeclaredClass.top(source.path, source.tree).items():
+                if name in before:
+                    for held in new:
+                        edges.extend((before[name], owner, held) for _ in owner.holding(held, before[name]))
+        owners = Counter((base.path, base.node.name) for base, _, _ in edges)
+        holders = Counter((held.path, held.node.name) for _, _, held in edges)
+        for base, owner, held in edges:
+            if owners[base.path, base.node.name] == holders[held.path, held.node.name] == 1:
+                for field in sorted(base.fields):
+                    if (not owner.binds(field) and field in held.fields
+                            and base.declared(field).same(held.declared(field))):
+                        yield Move(base, tuple(base.compared(field)), held, tuple(held.compared(field)))
+
+
+class MemberRelocation(ProvedMove):
+    """A method a class gave up to its direct parent, unchanged.
+
+    The parent is the provenance edge: at both revisions one direct base of the class resolves
+    to the parent's own declaration, the class no longer binds the method at the head, the
+    parent binds it once at the head and not at all at the base, and the definition is the
+    same, decorators, signature and body. Every name the definition reads from outside itself
+    resolves to the same owner from the parent's scope as it did from the class's. A method
+    that calls super, reads __class__ or spells a private name the compiler mangles with its
+    class's name means something else in another class and moves nothing.
+    """
+
+    @classmethod
+    def moves(cls, sources: list[ChangedSource], left: list[ChangedSource]) -> Iterator[Move]:
+        kept = [(before[name], after[name]) for source in sources
+                for before, after in [(DeclaredClass.top(source.path, source.base_tree),
+                                       DeclaredClass.top(source.path, source.tree))]
+                for name in sorted(before.keys() & after.keys())]
+        for child, child_head in kept:
+            for parent_base, parent in kept:
+                if child.derives(parent_base) and child_head.derives(parent):
+                    for name, old in child.methods.items():
+                        if (name in parent.methods and not child_head.binds(name)
+                                and not parent_base.binds(name)
+                                and ast.dump(old) == ast.dump(new := parent.methods[name])
+                                and cls.portable(old)
+                                and cls.owners(child, old).same(cls.owners(parent, new))):
+                            yield Move(child, (old,), parent, (new,))
+
+    @staticmethod
+    def portable(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """Whether the definition means the same in any class: no super, no __class__, no
+        private name the compiler would mangle with the enclosing class's name."""
+        for node in ast.walk(function):
+            match node:
+                case ast.Name(id="super" | "__class__"):
+                    return False
+                case ast.Constant():
+                    continue
+            for _, value in ast.iter_fields(node):
+                if isinstance(value, str) and value.startswith("__") and not value.endswith("__"):
+                    return False
+        return True
+
+    @staticmethod
+    def owners(declared: DeclaredClass, function: ast.FunctionDef | ast.AsyncFunctionDef) -> NominalProof:
+        """What the definition's outside names refer to, read from its class's scope: the names
+        its decorators, defaults and annotations read, and every global its body reads, each
+        resolved to its owning module and name. A global declaration, a name the class body
+        binds or one the module's declarations cannot resolve proves nothing."""
+        table = symtable.symtable(ast.unparse(function), declared.path, "exec")
+        names = {symbol.get_name() for symbol in table.get_symbols()
+                 if symbol.get_name() != function.name}
+        for child in MemberRelocation.nested(table):
+            for symbol in child.get_symbols():
+                if symbol.is_declared_global():
+                    return UnprovedIdentity()
+                if symbol.is_global():
+                    names.add(symbol.get_name())
+        return DecoratorBinding.identity(declared.tree, declared.path, declared.scope,
+                                         ast.Tuple(elts=[ast.Name(id=name) for name in sorted(names)]))
+
+    @staticmethod
+    def nested(table: symtable.SymbolTable) -> Iterator[symtable.SymbolTable]:
+        """Every scope inside the table, the definition's own first."""
+        for child in table.get_children():
+            yield child
+            yield from MemberRelocation.nested(child)
 
 
 class CleanChangedLines(OccurrenceMeasure):
@@ -568,32 +794,32 @@ class CleanChangedLines(OccurrenceMeasure):
     class moved between files, is the same occurrence moved, not a new one written.
     """
 
-    @staticmethod
+    @classmethod
     def introduced(
-        repo: Project, base: str, head: str, paths: tuple[str, ...], departed_from: tuple[str, ...],
+        cls, repo: Project, base: str, head: str, paths: tuple[str, ...],
+        departed_from: tuple[str, ...],
     ) -> dict[FileCount, list[int]]:
         """Each strict measure's sites on each path's changed lines. Occurrences that left the
         changed modules in ``departed_from`` (those present at the base) pay for the same
-        occurrences arriving elsewhere."""
+        occurrences arriving elsewhere, and for those a proved move carried."""
         sources = [ChangedSource.read(repo, base, head, path) for path in paths]
         left = [ChangedSource.departed(repo, base, head, path) for path in departed_from]
         found: dict[FileCount, list[int]] = {}
-        for measure in Compared.members_with(CleanChangedLines):
+        for measure in Compared.members_with(cls):
             departed: Counter[tuple[str, str]] = Counter()
             for source in left:
                 gone = measure.identities(repo, source.base_tree, source.path)
                 gone.subtract(measure.identities(repo, source.tree, source.path))
                 departed.update(+gone)
+            extracted = ProvedMove.credit(repo, measure, sources, left, departed)
             for source in sources:
-                found[measure.at(source.path)] = measure.changed_sites(repo, source, departed)
+                found[measure.at(source.path)] = measure.changed_sites(repo, source, departed, extracted)
         return found
 
     @staticmethod
     def scopes(tree: ast.AST) -> dict[ast.AST, str]:
         """Each node's enclosing class and function names, dotted; the module is empty."""
-        names = ScopeNames()
-        names.visit(tree)
-        return names.found
+        return ScopeNames.of(tree).found
 
     @classmethod
     def identities(cls, repo: Project, tree: ast.AST, filename: str) -> Counter[tuple[str, str]]:
@@ -606,10 +832,26 @@ class CleanChangedLines(OccurrenceMeasure):
         return found
 
     @classmethod
-    def changed_sites(cls, repo: Project, source: ChangedSource,
-                      departed: Counter[tuple[str, str]]) -> list[int]:
+    def blocks(cls, delta: Counts) -> bool:
+        """Never on raw growth: Comparison.failed fails every introduced occurrence on its own,
+        and a moved or extracted occurrence grows its destination's raw count while writing
+        nothing. A new occurrence still fails through ``introduced`` even when an unrelated
+        deletion offsets the totals."""
+        return False
+
+    @classmethod
+    def missing(cls, head: Counts, introduced: dict[FileCount, list[int]]) -> list[MeasureCount]:
+        """A file with occurrences at the head but no introduced-site report is unproved: only
+        an explicit report, even an empty one, says no occurrence there is new."""
+        return [key for key, value in head.items()
+                if cls.owns(key) and value > 0 and key not in introduced]
+
+    @classmethod
+    def changed_sites(cls, repo: Project, source: ChangedSource, departed: Counter[tuple[str, str]],
+                      extracted: Counter[ast.AST]) -> list[int]:
         """The first changed line of each occurrence written there that the base lacks and no
-        changed module gave up; a moved occurrence spends the departure it came from."""
+        changed module gave up; a moved occurrence spends the departure it came from, and an
+        occurrence a proved move carried spends its credit."""
         scopes = cls.scopes(source.tree)
         unwritten = cls.identities(repo, source.tree, source.path)
         unwritten.subtract(cls.identities(repo, source.base_tree, source.path))
@@ -622,7 +864,9 @@ class CleanChangedLines(OccurrenceMeasure):
                 unwritten[identity] -= arrived
                 moved = min(arrived, departed[identity])
                 departed[identity] -= moved
-                sites.extend([min(touched)] * (arrived - moved))
+                carried = min(arrived - moved, extracted[node])
+                extracted[node] -= carried
+                sites.extend([min(touched)] * (arrived - moved - carried))
         return sites
 
 
@@ -656,12 +900,19 @@ class Comparison:
             "found": {name: [dataclasses.asdict(site) for site in sites]
                       for name, sites in self.keyed(self.found).items()},
             "delta": self.keyed(self.delta),
+            "missing": sorted(key.text for key in self.missing),
         }
+
+    @property
+    def missing(self) -> list[MeasureCount]:
+        """Counts whose measure's required evidence the comparison lacks."""
+        return [key for measure in Measure.members_with(Compared)
+                for key in measure.missing(self.head, self.introduced)]
 
     @property
     def failed(self) -> bool:
         return (any(measure.blocks(self.delta) for measure in Measure.members_with(Compared))
-                or any(self.introduced.values()))
+                or any(self.introduced.values()) or bool(self.missing))
 
 
 def compare(repo: Project, base: str, head: str, root: str, workers: int,
@@ -724,7 +975,7 @@ def compare(repo: Project, base: str, head: str, root: str, workers: int,
              if any(asked.owns(key) for asked in measured)}
     # Only a grown measure is read for its sites, so a clean change pays for none.
     grown = [measure for measure in LocatedSource.members_with(LocatedSource)
-             if measure in measured and measure.blocks(comparison.delta)]
+             if measure in measured and measure.grown(comparison.delta)]
     if grown:
         sources = repo.sources(head, paths & repo.python_paths(head, root))
         found |= {key: sites for measure in grown
@@ -750,6 +1001,8 @@ def ratchet(repo: Project, base: str, head: str, root: str, workers: int) -> int
     for identity, lines in sorted(Comparison.keyed(result.introduced).items()):
         if lines:
             print(f"introduced {identity} at lines {lines}", file=sys.stderr)
+    for identity in sorted(key.text for key in result.missing):
+        print(f"missing introduced-site report for {identity}", file=sys.stderr)
     return int(result.failed)
 
 

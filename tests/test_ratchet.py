@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import time
+from dataclasses import dataclass
 
 import black
 import pytest
@@ -27,14 +28,32 @@ from audit.source_measures import (BannedVocabulary, BooleanChainTerms, BroadExc
                                    PlainStrIdAnnotation, RawRecordShapes, StringFieldMetadata,
                                    TypeIdentity, UnannotatedParameter)
 from audit.typing_measures import AnyName, StringSubscript, TypeCheckingImport
-from ratchet_fixture import PROJECT, Checkout
+from ratchet_fixture import PROJECT, Checkout, FixtureProject
 
 
 def test_measure_owner_rejects_a_new_absence() -> None:
     name = NoneAbsence.at("tools/example.py")
-    result = Comparison("tools", "base", "head", (), {name: 0}, {name: 1}, {}, {})
+    result = Comparison("tools", "base", "head", (), {name: 0}, {name: 1}, {name: [1]}, {})
     assert result.delta[name] == 1
     assert result.failed
+
+
+GROWN_ABSENCE = NoneAbsence.at("tools/example.py")
+
+
+@pytest.mark.parametrize(
+    ("introduced", "failed", "missing"),
+    [({}, True, [GROWN_ABSENCE]), ({GROWN_ABSENCE: []}, False, []), ({GROWN_ABSENCE: [1]}, True, [])],
+    ids=["unreported", "reported_none_new", "reported_new"],
+)
+def test_clean_lines_growth_fails_only_on_a_new_site_or_a_missing_report(introduced, failed, missing):
+    """Raw growth alone is a move; an explicit empty report says nothing is new, while an
+    absent report proves nothing."""
+    result = Comparison("tools", "base", "head", (), {GROWN_ABSENCE: 0}, {GROWN_ABSENCE: 1}, introduced, {})
+    assert result.delta[GROWN_ABSENCE] == 1
+    assert result.failed is failed
+    assert result.missing == missing
+    assert result.report()["missing"] == [key.text for key in missing]
 
 
 @pytest.mark.parametrize(
@@ -795,12 +814,229 @@ def test_an_absence_moved_with_its_class_to_another_module_is_not_written(repo):
     base = repo.commit({"attempts.py": holder, "executions.py": "VALUE = 1\n"})
     moved = repo.commit({"attempts.py": "VALUE = 2\n", "executions.py": holder})
     status, report = repo.compare(base, moved, NoneAbsence)
+    assert status == 0
     assert report["introduced"][NoneAbsence.at(f"{repo.root}/executions.py").text] == []
     deleted = repo.commit({"attempts.py": holder, "executions.py": None})
     moved_out = repo.commit({"attempts.py": None, "owners.py": holder + "\n\n" + other})
     status, report = repo.compare(deleted, moved_out, NoneAbsence)
     assert status == 1
     assert report["introduced"][NoneAbsence.at(f"{repo.root}/owners.py").text] == [8]
+
+
+EXTRACTED_FROM = (
+    "class Request:\n    thread: str\n    before: int | None = None\n    archive: str | None = None\n"
+    "\n\nclass Other:\n    name: str\n"
+)
+HOLDER = "from .pages import Page\n\n\nclass Request:\n    thread: str\n    operation: Page\n"
+OTHER = "\n\nclass Other:\n    name: str\n"
+PAGE = (
+    "from typing import Annotated\n\n\nclass Page:\n"
+    "    before: Annotated[int | None, \"Read before this cursor\"] = None\n"
+    "    archive: str | None = None\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("holder", "pages", "written"),
+    [
+        (HOLDER + OTHER, PAGE, 0),
+        (HOLDER.replace("    operation", "    before: int | None = None\n    operation") + OTHER, PAGE, 1),
+        (HOLDER.replace("operation: Page", "operation: object") + OTHER, PAGE, 2),
+        (HOLDER + OTHER + "    page: Page\n", PAGE, 2),
+        (HOLDER + "\n\nPage = dict\n" + OTHER, PAGE, 2),
+        (HOLDER.replace(".pages", ".elsewhere") + OTHER, PAGE, 2),
+        (HOLDER + OTHER, PAGE.replace("before:", "earlier:"), 1),
+        (HOLDER + OTHER, PAGE.replace("int | None", "float | None"), 1),
+        (HOLDER + OTHER, PAGE.replace("archive: str | None = None", "archive: str | None = ''"), 1),
+        (HOLDER + OTHER, PAGE + "    limit: int | None = None\n", 1),
+        (HOLDER + OTHER, PAGE + "\n    def empty(self):\n        return self.before is None\n", 1),
+        (HOLDER.replace("import Page", "import Copy, Page").replace(
+            "operation: Page", "operation: Page\n    copy: Copy") + OTHER,
+         PAGE + "\n\nclass Copy:\n    before: int | None = None\n", 3),
+        (HOLDER.replace("import Page", "import Page as Held").replace("operation: Page", "operation: Held")
+         + OTHER, PAGE.replace("import Annotated", "import Annotated as Meta").replace("Annotated[", "Meta["), 0),
+        (HOLDER.replace("from .pages import Page\n", "def load():\n    from .pages import Page\n") + OTHER,
+         PAGE, 2),
+        (HOLDER + "\n\ndef make():\n    Page = dict\n    return Page\n" + OTHER, PAGE, 0),
+        (HOLDER + OTHER, PAGE + "\n\nAnnotated = list\n", 1),
+        (HOLDER + OTHER, PAGE.replace("from typing import Annotated\n", "def typed():\n    from typing import Annotated\n"), 1),
+        (HOLDER + OTHER, PAGE + "\n\nPage = dict\n", 2),
+        (HOLDER + OTHER, PAGE + "    archive = ''\n", 1),
+        (HOLDER.replace("    operation: Page", "    operation: Page\n    before, extra = 1, 2") + OTHER, PAGE, 1),
+        (HOLDER + OTHER, PAGE.replace("class Page:\n", "class Page:\n    Annotated = dict\n"), 1),
+        (HOLDER.replace("    operation: Page", "    Page = dict\n    operation: Page") + OTHER, PAGE, 2),
+    ],
+    ids=["extracted", "retained", "unheld", "second_owner", "shadowed", "unresolved", "renamed",
+         "retyped", "redefaulted", "extra_field", "method", "copied_twice", "aliased_imports",
+         "nested_only_import", "unrelated_local_name", "annotated_rebound", "annotated_local_only",
+         "export_rebound", "field_rebound", "source_rebound_by_unpacking",
+         "annotated_shadowed_in_class", "held_class_shadowed_in_owner"],
+)
+def test_fields_extracted_into_the_one_new_held_class_are_moved_not_written(repo, holder, pages, written):
+    """An old class that now holds one new class in a typed field carries each field it lost
+    into that class unchanged; anything the proof does not cover is still written."""
+    base = repo.commit({"holder.py": EXTRACTED_FROM, "pages.py": "VALUE = 1\n"})
+    head = repo.commit({"holder.py": holder, "pages.py": pages})
+    status, report = repo.compare(base, head, NoneAbsence)
+    source, destination = (NoneAbsence.at(f"{repo.root}/{name}").text for name in ("holder.py", "pages.py"))
+    assert status == int(written > 0)
+    assert len(report["introduced"][destination]) == written
+    assert report["introduced"][source] == []
+    assert report["base"][source] == 2 and report["head"][destination] >= 2
+    assert report["delta"][destination] == report["head"][destination]
+
+
+TYPED_FROM = (
+    "from .alpha import Cursor\n\n\nclass Request:\n    thread: str\n"
+    "    before: Cursor | None = None\n    archive: str | None = None\n"
+)
+TYPED_PAGE = (
+    "from .alpha import Cursor\n\n\nclass Page:\n"
+    "    before: Cursor | None = None\n    archive: str | None = None\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("source", "pages", "written"),
+    [
+        (TYPED_FROM, TYPED_PAGE, 0),
+        (TYPED_FROM, TYPED_PAGE.replace("import Cursor", "import Cursor as Mark").replace(
+            "before: Cursor", "before: Mark"), 0),
+        (TYPED_FROM, TYPED_PAGE.replace(".alpha", ".beta"), 1),
+        (TYPED_FROM, TYPED_PAGE + "\n\nstr = bytes\n", 1),
+        (TYPED_FROM, TYPED_PAGE.replace("    archive", "    str = bytes\n    archive"), 1),
+        (TYPED_FROM.replace("from .alpha import Cursor", "from typing import TypeVar\n\nCursor = TypeVar('Cursor')"),
+         TYPED_PAGE.replace("from .alpha import Cursor", "from typing import TypeVar\n\nCursor = TypeVar('Cursor')"), 1),
+    ],
+    ids=["same_owner", "same_owner_aliased", "changed_owner", "builtin_shadowed",
+         "builtin_shadowed_in_class", "type_variable"],
+)
+def test_extracted_field_types_are_compared_by_the_owner_they_import(repo, source, pages, written):
+    """A field type is the module and name its spelling is bound to, not the spelling: the same
+    Cursor imported from another module is another type, and an alias of the same is not."""
+    base = repo.commit({"holder.py": source + OTHER, "pages.py": "VALUE = 1\n"})
+    head = repo.commit({"holder.py": HOLDER + OTHER, "pages.py": pages})
+    status, report = repo.compare(base, head, NoneAbsence)
+    source_count, destination = (NoneAbsence.at(f"{repo.root}/{name}").text for name in ("holder.py", "pages.py"))
+    assert status == int(written > 0)
+    assert len(report["introduced"][destination]) == written
+    assert report["introduced"][source_count] == []
+
+
+RECORDED = "    def recorded(self, value: int | None = None) -> bool:\n        return value is None and Kind.of(self)\n"
+OVERRIDE = "class MessageEntry(RecordedEntry):\n    def recorded(self, value: int | None = None) -> bool:\n        return False\n"
+ENTRIES_BASE = (
+    "from .kinds import Kind\n\n\nclass RecordedEntry:\n    kind: Kind\n\n\n"
+    f"class NativeEntry(RecordedEntry):\n{RECORDED}\n\n{OVERRIDE}"
+)
+ENTRIES_HEAD = (
+    f"from .kinds import Kind\n\n\nclass RecordedEntry:\n    kind: Kind\n\n{RECORDED}\n\n"
+    f"class NativeEntry(RecordedEntry):\n    pass\n\n\n{OVERRIDE}"
+)
+
+
+SUPER = ENTRIES_BASE.replace("Kind.of(self)", "super().of()")
+MANGLED = ENTRIES_BASE.replace("Kind.of(self)", "self.__kind")
+UNRELATED = ENTRIES_BASE.replace(RECORDED, "    pass\n").replace(OVERRIDE, f"{OVERRIDE}\n\nclass Unrelated:\n{RECORDED}")
+
+
+@pytest.mark.parametrize(
+    ("base", "head", "moved"),
+    [
+        (ENTRIES_BASE, ENTRIES_HEAD, True),
+        (ENTRIES_BASE, ENTRIES_HEAD.replace("    pass\n", RECORDED), False),
+        (ENTRIES_BASE, ENTRIES_HEAD.replace("return value is None and", "return value is None or"), False),
+        (ENTRIES_BASE, ENTRIES_HEAD.replace("\n    def recorded", "\n    @staticmethod\n    def recorded", 1), False),
+        (ENTRIES_BASE, ENTRIES_HEAD.replace("(self, value: int | None = None) -> bool:\n        return value",
+                                            "(self, item: int | None = None) -> bool:\n        return item", 1), False),
+        (ENTRIES_BASE, UNRELATED, False),
+        (ENTRIES_BASE, ENTRIES_HEAD + "\n\nRecordedEntry = object\n", False),
+        (ENTRIES_BASE, ENTRIES_HEAD.replace("class NativeEntry(RecordedEntry)", "class NativeEntry(base(RecordedEntry))"), False),
+        (ENTRIES_BASE, ENTRIES_HEAD.replace("class NativeEntry(RecordedEntry):\n    pass",
+                                            "class NativeEntry(RecordedEntry):\n    RecordedEntry = object"), False),
+        (SUPER, ENTRIES_HEAD.replace("Kind.of(self)", "super().of()"), False),
+        (MANGLED, ENTRIES_HEAD.replace("Kind.of(self)", "self.__kind"), False),
+    ],
+    ids=["moved", "retained_copy", "changed_body", "changed_decorator", "changed_signature",
+         "unrelated_class", "shadowed_parent", "dynamic_base", "base_shadowed_in_class", "super",
+         "mangled_name"],
+)
+def test_a_method_moved_unchanged_to_its_direct_parent_is_not_written(repo, base, head, moved):
+    """A method a class gives up to its own direct parent, unchanged and reading the same
+    owners, carries its occurrences there; any other arrival of the same text is written. The
+    override in MessageEntry stays untouched either way."""
+    before = repo.commit({"entries.py": base})
+    after = repo.commit({"entries.py": head})
+    status, report = repo.compare(before, after, NoneAbsence)
+    lines = report["introduced"][NoneAbsence.at(f"{repo.root}/entries.py").text]
+    assert status == int(not moved)
+    assert (lines == []) is moved
+
+
+def test_a_method_moved_to_a_parent_in_another_module_reads_the_same_owners(repo):
+    """The parent may live in another module when the child's base resolves to it there; a
+    global the method reads must resolve to the same owner from the parent's module."""
+    parent = "from .kinds import Kind\n\n\nclass RecordedEntry:\n    kind: Kind\n"
+    child = f"from .kinds import Kind\nfrom .records import RecordedEntry\n\n\nclass NativeEntry(RecordedEntry):\n{RECORDED}"
+    base = repo.commit({"records.py": parent, "entries.py": child})
+    head = repo.commit({"records.py": f"{parent}\n{RECORDED}",
+                        "entries.py": child.replace(RECORDED, "    pass\n")})
+    status, report = repo.compare(base, head, NoneAbsence)
+    destination = NoneAbsence.at(f"{repo.root}/records.py").text
+    assert status == 0 and report["introduced"][destination] == []
+    foreign = repo.commit({"records.py": f"{parent.replace('.kinds', '.other')}\n{RECORDED}",
+                           "entries.py": child.replace(RECORDED, "    pass\n")})
+    status, report = repo.compare(base, foreign, NoneAbsence)
+    assert status == 1 and report["introduced"][destination]
+
+
+def test_a_moved_method_pays_once_and_an_extra_none_beside_it_is_written(repo):
+    """The move pays only the occurrences that left the child; a new field written beside the
+    moved method in the parent is still new, and an unrelated deletion pays for nothing."""
+    extra = ENTRIES_HEAD.replace("    kind: Kind\n", "    kind: Kind\n    note: str | None = None\n", 1)
+    base = repo.commit({"entries.py": ENTRIES_BASE, "other.py": "def gone(v):\n    return v is None\n"})
+    head = repo.commit({"entries.py": extra, "other.py": "VALUE = 1\n"})
+    status, report = repo.compare(base, head, NoneAbsence)
+    line = extra.splitlines().index("    note: str | None = None") + 1
+    lines = report["introduced"][NoneAbsence.at(f"{repo.root}/entries.py").text]
+    assert status == 1 and lines and set(lines) == {line}
+
+
+def encoder(function):
+    return function
+
+
+encoder.__module__ = "wire.encoding"
+
+
+@dataclass(frozen=True)
+class BoundaryProject(FixtureProject):
+    """A fixture project whose one absence boundary is an encoder from a foreign module."""
+
+    def absence_boundaries(self):
+        return (encoder,)
+
+
+@pytest.mark.parametrize(
+    ("imports", "counted"),
+    [
+        ("from wire.encoding import encoder\n", False),
+        ("import wire.encoding as wire_encoding\n", False),
+        ("from wire.decoding import encoder\n", True),
+        ("from wire.encoding import encoder\nencoder = print\n", True),
+    ],
+    ids=["imported", "module_imported", "wrong_module", "shadowed"],
+)
+def test_a_foreign_encoder_marker_is_an_absence_boundary(repo, imports, counted):
+    """An encoder writing None to the outside is a boundary like a decoder reading it; a
+    marker of the same spelling from another module, or rebound, marks nothing."""
+    repo.project = BoundaryProject(repo.path, repo.root)
+    decorator = "wire_encoding.encoder" if "as wire_encoding" in imports else "encoder"
+    base = repo.commit({"wire.py": "VALUE = 1\n"})
+    head = repo.commit({"wire.py": f"{imports}\n\n@{decorator}\ndef write(value):\n    return value is None\n"})
+    status, report = repo.compare(base, head, NoneAbsence)
+    assert status == int(counted)
+    assert bool(report["introduced"][NoneAbsence.at(f"{repo.root}/wire.py").text]) is counted
 
 
 def test_git_context_configuration_cannot_mark_unchanged_lines_as_new(repo):

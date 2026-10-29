@@ -53,7 +53,7 @@ class FixtureProject(Project[object]):
     def lock_functions(self) -> frozenset[str]:
         return frozenset()
 
-    def absence_decoders(self) -> tuple[Callable[..., object], ...]:
+    def absence_boundaries(self) -> tuple[Callable[..., object], ...]:
         return ()
 
     def mechanism_modules(self) -> frozenset[Path]:
