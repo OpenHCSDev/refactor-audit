@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from audit.census import Census, CensusRun  # noqa: E402
+from audit.census import Census, CensusRun, Undeclared  # noqa: E402
 from audit.dispatch import DispatchMeasure  # noqa: E402
 from audit.measures import Measure, NodeCount, Tally, Unparsed, interpreter  # noqa: E402
 from audit.origin import ModuleOrigin, decode_origin  # noqa: E402
@@ -59,7 +59,7 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=10)
     args = ap.parse_args()
     repo = Repository(args.repo)
-    census = CensusRun(repo)
+    census = CensusRun(repo, Undeclared())
     reviews = [MergeReview.of(census, merge.sha, merge.time, merge.subject, args.root)
                for merge in repo.merges(args.since, args.rev)]
     failures = [(review, failure) for review in reviews for failure in review.unparsed]

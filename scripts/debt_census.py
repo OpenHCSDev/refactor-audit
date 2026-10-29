@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).parent))
-from audit.census import Census, CensusRun, CountTable, DensityTable  # noqa: E402
+from audit.census import Census, CensusRun, CountTable, DensityTable, Undeclared  # noqa: E402
 from audit.family import Family  # noqa: E402
 from audit.repository import Repository  # noqa: E402
 
@@ -158,7 +158,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
-    scope = Scope(CensusRun(Repository(args.repo)), args.root, args.rev, tuple(args.exclude))
+    scope = Scope(CensusRun(Repository(args.repo), Undeclared()), args.root, args.rev, tuple(args.exclude))
     report = args.mode.report(scope)
     print(report.render(args.top))
     if args.json:

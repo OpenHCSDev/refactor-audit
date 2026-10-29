@@ -9,20 +9,26 @@ from .measures import (Headline, Measure, MeasuredRevisions, MechanismOwners, Me
 from .repository import Repository
 
 
-@dataclass(frozen=True)
-class CensusRun(MechanismOwners, MeasuredRevisions):
-    """One census of a repository that declares no project: no module of it owns a mechanism
-    the measures exempt, so every module is measured. Its node table is read from the family
-    once, when the census starts."""
-
-    repo: Repository
-    table: NodeTable = field(default_factory=NodeTable.of_family)
+class Undeclared(MechanismOwners):
+    """A repository that declares no project: no module of it owns a mechanism the measures
+    exempt, so every module is measured."""
 
     def owns_mechanism(self, path: str) -> bool:
         return False
 
+
+@dataclass(frozen=True)
+class CensusRun(MeasuredRevisions):
+    """One census of a repository, with whoever answers which of its modules own the codec
+    and schema mechanism: a declared project, or Undeclared. Its node table is read from the
+    family once, when the census starts."""
+
+    repo: Repository
+    owners: MechanismOwners
+    table: NodeTable = field(default_factory=NodeTable.of_family)
+
     def read(self, path: str, text: str) -> ParseOutcome:
-        return self.table.measure(self, path, text)
+        return self.table.measure(self.owners, path, text)
 
     def measure(self, rev: str, path: str) -> ParseOutcome:
         return self.read(path, self.repo.source(rev, path))

@@ -21,14 +21,15 @@ from audit.chain_terms import ChainProfile, TermKind, TypeTerm, PredicateTerm
 from audit.dispatch import (
     BuiltinHandlerTypeSwitch, StringDispatch, StringDispatchArms, TypeSwitch, TypeSwitchArms,
 )
-from audit.census import CensusRun
+from audit.census import CensusRun, Undeclared
 from audit.measures import ForeignNegation, Measure, Measured, NodeCount
 from audit.source_measures import FamilyFlattened, ForeignAbsenceProbe
 from audit.repository import Repository
 from merge_review import MergeReview
+from ratchet_fixture import FixtureProject
 
 # A repository that declares no project: the census measures every module of it.
-CENSUS = CensusRun(Repository(SCRIPTS))
+CENSUS = CensusRun(Repository(SCRIPTS), Undeclared())
 
 
 def source_for(cases: int, *, type_switch: bool = False) -> str:
@@ -170,11 +171,13 @@ class Decode(MroDispatch):
     @cases(DomainRecord, ast.Dict)
     async def domain(self, value): pass
 '''
-        for path, count in (("src/pkg/presentation.py", 7),
-                            ("src/pkg/field_codec.py", 0),
-                            ("src/pkg/presentation_codec.py", 7)):
-            with self.subTest(path=path):
-                self.assertEqual(CENSUS.read(path, source).tally[BuiltinHandlerTypeSwitch], count)
+        declared = CensusRun(Repository(SCRIPTS), FixtureProject(SCRIPTS, "src/pkg"))
+        for census, path, count in ((CENSUS, "src/pkg/field_codec.py", 7),
+                                    (declared, "src/pkg/presentation.py", 7),
+                                    (declared, "src/pkg/field_codec.py", 0),
+                                    (declared, "src/pkg/presentation_codec.py", 7)):
+            with self.subTest(owners=census.owners, path=path):
+                self.assertEqual(census.read(path, source).tally[BuiltinHandlerTypeSwitch], count)
         shadowed = source.replace('class Decode', 'dict = DomainRecord\nclass Decode')
         shadowed = shadowed.replace('native.dict', 'dict')
         self.assertEqual(CENSUS.read("source.py", shadowed).tally[BuiltinHandlerTypeSwitch], 6)
@@ -265,7 +268,7 @@ class Consumer(MroDispatch):
                 git("commit", "-qm", "Change specimen")
                 git("checkout", "-q", "--detach", base)
                 git("merge", "--no-ff", "-qm", "Merge pull request #1 from test/feature", "feature")
-                review = MergeReview.of(CensusRun(Repository(path)), "HEAD", 0, "Test", "pkg")
+                review = MergeReview.of(CensusRun(Repository(path), Undeclared()), "HEAD", 0, "Test", "pkg")
                 result = subprocess.run([sys.executable, str(SCRIPTS / "merge_review.py"),
                                          "--repo", directory, "--root", "pkg", "--since", base, "--rev", "HEAD"],
                                         capture_output=True, text=True, env=env)

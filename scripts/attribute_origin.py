@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from audit.census import CensusRun  # noqa: E402
+from audit.census import CensusRun, Undeclared  # noqa: E402
 from audit.measures import Measured, Unparsed  # noqa: E402
 from audit.origin import Attribution, origin_of  # noqa: E402
 from audit.repository import Repository  # noqa: E402
@@ -34,7 +34,7 @@ def main() -> int:
     ap.add_argument("--foundation", default="")
     args = ap.parse_args()
     repo = Repository(args.repo)
-    census = CensusRun(repo)
+    census = CensusRun(repo, Undeclared())
     existing = repo.python_paths(args.since, args.root)
     foundation = origin_of(repo, args.rev, args.foundation) if args.foundation else None
     attribution = Attribution(args.since, args.rev)
