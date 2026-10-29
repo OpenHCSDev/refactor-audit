@@ -19,7 +19,7 @@ import time
 import types
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -142,7 +142,7 @@ class Project[Guard](ContentCache, MechanismOwners, Repository, ABC):
         from the measures this process already imported."""
 
     @abstractmethod
-    def run(self, command: tuple[str, ...], *, cwd: Path, env: Mapping[str, str],
+    def run(self, command: tuple[str, ...], *, cwd: Path, env: dict[str, str],
             timeout: float) -> subprocess.CompletedProcess[bytes]:
         """One checker or probe process, collected with its output."""
 

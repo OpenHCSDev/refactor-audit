@@ -12,7 +12,7 @@ import multiprocessing
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from concurrent.futures import Executor, ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,7 +43,7 @@ class FixtureProject(Project[object]):
     def pool(self, workers: int) -> Executor:
         return ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork"))
 
-    def run(self, command: tuple[str, ...], *, cwd: Path, env: Mapping[str, str],
+    def run(self, command: tuple[str, ...], *, cwd: Path, env: dict[str, str],
             timeout: float) -> subprocess.CompletedProcess[bytes]:
         return subprocess.run(command, cwd=cwd, env=env, timeout=timeout, capture_output=True)
 

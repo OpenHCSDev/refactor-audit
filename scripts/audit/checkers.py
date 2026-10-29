@@ -3,6 +3,7 @@ changed files, and Black's layout for the size of each class."""
 from __future__ import annotations
 
 import ast
+import dataclasses
 import importlib
 import os
 import re
@@ -151,9 +152,14 @@ class CheckedRevision(SideCounts):
         # A checker reports each file under the path it was given, inside the tree or relative to
         # it; mypy also reports the modules it follows outside the tree, which are not measured.
         output = cls.checker_output(result, ref)
-        reported = ((Path(tree, match["path"]), match) for match in cls.finding.finditer(output))
-        return tuple(cls.site(path.relative_to(tree).as_posix(), match)
-                     for path, match in reported if path.is_relative_to(tree))
+        found = ((Path(tree, site.path), site) for site in cls.reported(output))
+        return tuple(dataclasses.replace(site, path=path.relative_to(tree).as_posix())
+                     for path, site in found if path.is_relative_to(tree))
+
+    @classmethod
+    def reported(cls, output: str) -> tuple[CheckerSite, ...]:
+        """Every finding the checker printed, at the path it printed."""
+        return tuple(cls.site(match["path"], match) for match in cls.finding.finditer(output))
 
     @classmethod
     def site(cls, path: str, match: re.Match[str]) -> CheckerSite:
