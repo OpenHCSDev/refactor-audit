@@ -864,24 +864,30 @@ class CleanChangedLines(OccurrenceMeasure):
     @classmethod
     def changed_sites(cls, repo: Project, source: ChangedSource, departed: Counter[tuple[str, str]],
                       extracted: Counter[ast.AST]) -> list[int]:
-        """The first changed line of each occurrence written there that the base lacks and no
-        changed module gave up; a moved occurrence spends the departure it came from, and an
-        occurrence a proved move carried spends its credit."""
+        """The line of each occurrence written there that the base lacks and no changed module
+        gave up; a moved occurrence spends the departure it came from, and an occurrence a
+        proved move carried spends its credit.
+
+        An occurrence is its scope and text, not its lines: one whose identity is new is
+        written even where the patch kept its lines, as when Git aligns a method's unchanged
+        text across the class header that moved around it. Occurrences on changed lines are
+        paid first, so a site points at the line that changed when one did."""
         scopes = source.head.names.found
         unwritten = cls.identities(repo, source.head)
         unwritten.subtract(cls.identities(repo, source.base))
+        counted = [(node, count, cls.position.lines(node)) for node in cls.sites(repo, source.head)
+                   if (count := cls.occurrences(node))]
         sites = []
-        for node in cls.sites(repo, source.head):
-            if ((count := cls.occurrences(node))
-                    and (touched := source.lines.intersection(cls.position.lines(node)))):
-                identity = scopes[node], ast.unparse(node)
-                arrived = max(0, min(count, unwritten[identity]))
-                unwritten[identity] -= arrived
-                moved = min(arrived, departed[identity])
-                departed[identity] -= moved
-                carried = min(arrived - moved, extracted[node])
-                extracted[node] -= carried
-                sites.extend([min(touched)] * (arrived - moved - carried))
+        for node, count, lines in sorted(counted, key=lambda site: not source.lines.intersection(site[2])):
+            identity = scopes[node], ast.unparse(node)
+            arrived = max(0, min(count, unwritten[identity]))
+            unwritten[identity] -= arrived
+            moved = min(arrived, departed[identity])
+            departed[identity] -= moved
+            carried = min(arrived - moved, extracted[node])
+            extracted[node] -= carried
+            line = min(source.lines.intersection(lines), default=lines.start)
+            sites.extend([line] * (arrived - moved - carried))
         return sites
 
 
