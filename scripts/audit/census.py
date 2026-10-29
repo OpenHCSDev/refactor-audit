@@ -1,21 +1,49 @@
 """Aggregates of parse outcomes, and the tables that render them."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar, Iterable
 
-from .measures import Headline, Measure, Measured, ParseOutcome, Tally, Unparsed, interpreter
+from .measures import (Headline, Measure, MeasuredRevisions, MechanismOwners, Measured, NodeCount,
+                       NodeTable, ParseOutcome, Tally, Unparsed, interpreter)
+from .repository import Repository
+
+
+class Undeclared(MechanismOwners):
+    """A repository that declares no project: no module of it owns a mechanism the measures
+    exempt, so every module is measured."""
+
+    def owns_mechanism(self, path: str) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class CensusRun(MeasuredRevisions):
+    """One census of a repository, with whoever answers which of its modules own the codec
+    and schema mechanism: a declared project, or Undeclared. Its node table is read from the
+    family once, when the census starts."""
+
+    repo: Repository
+    owners: MechanismOwners
+    table: NodeTable = field(default_factory=NodeTable.of_family)
+
+    def read(self, path: str, text: str) -> ParseOutcome:
+        return self.table.measure(self.owners, path, text)
+
+    def measure(self, rev: str, path: str) -> ParseOutcome:
+        return self.read(path, self.repo.source(rev, path))
 
 
 @dataclass(frozen=True)
 class Census:
+    table: NodeTable
     measured: tuple[Measured, ...]
     unparsed: tuple[Unparsed, ...]
 
     @classmethod
-    def of(cls, outcomes: Iterable[ParseOutcome]) -> "Census":
+    def of(cls, table: NodeTable, outcomes: Iterable[ParseOutcome]) -> "Census":
         outcomes = tuple(outcomes)
-        return cls(tuple(m for o in outcomes for m in o.measured()),
+        return cls(table, tuple(m for o in outcomes for m in o.measured()),
                    tuple(u for o in outcomes for u in o.unparsed()))
 
     @property
@@ -33,14 +61,15 @@ class Census:
 
     def render_top(self, n: int) -> str:
         ranked = sorted(self.measured, key=lambda o: -o.tally.score())[:n]
-        weighted = ", ".join(f"{m.family_name} x{m.weight}" for m in Measure.members() if m.weight)
+        weighted = ", ".join(f"{m.family_name} x{m.weight}" for m in self.table.measures if m.weight)
         lines = [f"Top {n} files by weighted debt ({weighted}):"]
         lines += [f"  {o.tally.score():>6}  {o.path}  (code lines {o.tally.code_lines:+})" for o in ranked]
         return "\n".join(lines) if ranked else ""
 
     def record(self) -> dict[str, object]:
-        return {"tally": self.tally.as_record(),
-                "files": {o.path: o.tally.as_record() for o in self.measured},
+        measures = self.table.measures
+        return {"tally": self.tally.as_record(measures),
+                "files": {o.path: o.tally.as_record(measures) for o in self.measured},
                 "unparsed": [o.path for o in self.unparsed]}
 
 
@@ -55,7 +84,7 @@ class DensityTable:
                     "a ratio of changes to net lines is meaningless)")
         header = "per 1,000 code lines".ljust(24) + "".join(name.rjust(14) for name, _ in self.columns)
         rows = [measure.family_name.ljust(24) + "".join(f"{tally.density(measure):14.2f}" for _, tally in self.columns)
-                for measure in Measure.members()]
+                for measure in Measure.members_with(NodeCount)]
         headline = " + ".join(m.family_name for m in Measure.members_with(Headline))
         rows.append("HEADLINE".ljust(24) + "".join(f"{tally.headline():14.1f}" for _, tally in self.columns) + f"   ({headline})")
         rows.append("code lines".ljust(24) + "".join(f"{tally.code_lines:14}" for _, tally in self.columns))
@@ -68,6 +97,6 @@ class CountTable:
     tally: Tally
 
     def render(self) -> str:
-        rows = [f"  {measure.family_name:<24}{self.tally[measure]:>+8}" for measure in Measure.members()]
+        rows = [f"  {measure.family_name:<24}{self.tally[measure]:>+8}" for measure in Measure.members_with(NodeCount)]
         return "\n".join([f"change in counts ({self.label}): read these first when code was deleted as well as added",
                           *rows, f"  {'code lines':<24}{self.tally.code_lines:>+8}"])

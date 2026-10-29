@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from audit.census import CensusRun, Undeclared  # noqa: E402
 from audit.measures import Measured, Unparsed  # noqa: E402
 from audit.origin import Attribution, origin_of  # noqa: E402
 from audit.repository import Repository  # noqa: E402
@@ -33,14 +34,15 @@ def main() -> int:
     ap.add_argument("--foundation", default="")
     args = ap.parse_args()
     repo = Repository(args.repo)
-    existing = frozenset(repo.python_files(args.since, args.root))
+    census = CensusRun(repo, Undeclared())
+    existing = repo.python_paths(args.since, args.root)
     foundation = origin_of(repo, args.rev, args.foundation) if args.foundation else None
     attribution = Attribution(args.since, args.rev)
-    for path in repo.python_files(args.rev, args.root):
+    for path in sorted(repo.python_paths(args.rev, args.root)):
         if path in existing:
             continue
         origin = origin_of(repo, args.rev, path)
-        match repo.measure(args.rev, path):
+        match census.measure(args.rev, path):
             case Measured() as measured:
                 attribution.record(origin, origin.kind(args.refactor_branches), measured, foundation)
             case Unparsed():

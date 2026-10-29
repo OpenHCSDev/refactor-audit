@@ -18,8 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from audit.census import Census  # noqa: E402
-from audit.measures import DispatchMeasure, Measure, Tally, Unparsed, interpreter  # noqa: E402
+from audit.census import Census, CensusRun, Undeclared  # noqa: E402
+from audit.dispatch import DispatchMeasure  # noqa: E402
+from audit.measures import Measure, NodeCount, Tally, Unparsed, interpreter  # noqa: E402
 from audit.origin import ModuleOrigin, decode_origin  # noqa: E402
 from audit.repository import Repository  # noqa: E402
 
@@ -32,21 +33,21 @@ class MergeReview:
     unparsed: tuple[Unparsed, ...]
 
     @classmethod
-    def of(cls, repo: Repository, sha: str, merged_at: int, subject: str, root: str) -> "MergeReview":
-        census = Census.of(file_change.delta(repo, f"{sha}^1", sha)
-                           for file_change in repo.changes(f"{sha}^1", sha, root))
-        return cls(sha, decode_origin(merged_at, subject), census.tally, census.unparsed)
+    def of(cls, census: CensusRun, sha: str, merged_at: int, subject: str, root: str) -> "MergeReview":
+        measured = Census.of(census.table, (file_change.delta(census, f"{sha}^1", sha)
+                             for file_change in census.repo.python_changes(f"{sha}^1", sha, root)))
+        return cls(sha, decode_origin(merged_at, subject), measured.tally, measured.unparsed)
 
     def added(self) -> int:
-        return sum(measure.weight * max(0, self.change[measure]) for measure in Measure.members())
+        return sum(measure.weight * max(0, self.change[measure]) for measure in Measure.members_with(NodeCount))
 
     def rose(self, limit: int) -> str:
-        risen = sorted(((m, self.change[m]) for m in Measure.members() if self.change[m] > 0 and m.weight),
+        risen = sorted(((m, self.change[m]) for m in Measure.members_with(NodeCount) if self.change[m] > 0 and m.weight),
                        key=lambda item: -item[0].weight * item[1])
         return ", ".join(f"{m.family_name} +{n}" for m, n in risen[:limit])
 
     def dispatch_added(self) -> tuple[tuple[type[Measure], int], ...]:
-        return tuple((m, self.change[m]) for m in Measure.members() if issubclass(m, DispatchMeasure) and self.change[m] > 0)
+        return tuple((m, self.change[m]) for m in Measure.members_with(NodeCount) if issubclass(m, DispatchMeasure) and self.change[m] > 0)
 
 
 def main() -> int:
@@ -58,11 +59,9 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=10)
     args = ap.parse_args()
     repo = Repository(args.repo)
-    log = repo.git("log", "--first-parent", "--merges", "--reverse", "--format=%h%x00%ct%x00%s", f"{args.since}..{args.rev}")
-    reviews = []
-    for line in log.splitlines():
-        sha, merged_at, subject = line.split("\x00", 2)
-        reviews.append(MergeReview.of(repo, sha, int(merged_at), subject, args.root))
+    census = CensusRun(repo, Undeclared())
+    reviews = [MergeReview.of(census, merge.sha, merge.time, merge.subject, args.root)
+               for merge in repo.merges(args.since, args.rev)]
     failures = [(review, failure) for review in reviews for failure in review.unparsed]
     if failures:
         print(f"WARNING: {len(failures)} changed-file measurements did not parse under Python "
@@ -73,7 +72,7 @@ def main() -> int:
         return 2
     net = sum((r.change for r in reviews), Tally())
     print(f"{len(reviews)} merges, {args.since}..{args.rev}\n")
-    print("net change: " + ", ".join(f"{m.family_name} {net[m]:+d}" for m in Measure.members() if net[m]))
+    print("net change: " + ", ".join(f"{m.family_name} {net[m]:+d}" for m in Measure.members_with(NodeCount) if net[m]))
     print(f"code lines {net.code_lines:+d}\n")
     print("merges adding the most debt (weighted):")
     for review in sorted(reviews, key=lambda r: -r.added())[: args.top]:

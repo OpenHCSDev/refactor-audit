@@ -18,13 +18,18 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from audit.chain_terms import ChainProfile, TermKind, TypeTerm, PredicateTerm
-from audit.measures import (
-    BuiltinHandlerTypeSwitch, FamilyFlattened, ForeignAbsenceProbe, ForeignNegation,
-    Measured, StringDispatch, StringDispatchArms, TypeSwitch,
-    TypeSwitchArms, measure_source,
+from audit.dispatch import (
+    BuiltinHandlerTypeSwitch, StringDispatch, StringDispatchArms, TypeSwitch, TypeSwitchArms,
 )
+from audit.census import CensusRun, Undeclared
+from audit.measures import ForeignNegation, Measure, Measured, NodeCount
+from audit.source_measures import FamilyFlattened, ForeignAbsenceProbe
 from audit.repository import Repository
 from merge_review import MergeReview
+from ratchet_fixture import FixtureProject
+
+# A repository that declares no project: the census measures every module of it.
+CENSUS = CensusRun(Repository(SCRIPTS), Undeclared())
 
 
 def source_for(cases: int, *, type_switch: bool = False) -> str:
@@ -35,7 +40,7 @@ def source_for(cases: int, *, type_switch: bool = False) -> str:
 
 class AuditRegressions(unittest.TestCase):
     def test_negation_is_not_absence_and_explicit_probes_remain_visible(self):
-        measured = measure_source("editing.py", """
+        measured = CENSUS.read("editing.py", """
 class EditingMode:
     accepts_text = True
 def read(editor, unknown):
@@ -49,7 +54,7 @@ def read(editor, unknown):
         for expression in ("not editor.editing_mode.accepts_text", "not unknown.flag"):
             with self.subTest(expression=expression):
                 self.assertIsNone(ForeignAbsenceProbe.attribute(ast.parse(expression, mode="eval").body))
-        own = measure_source("owned.py", "def read(self):\n    return not self.flag, self.value is None\n")
+        own = CENSUS.read("owned.py", "def read(self):\n    return not self.flag, self.value is None\n")
         self.assertEqual(own.tally[ForeignAbsenceProbe], 0)
         self.assertEqual(own.tally[ForeignNegation], 0)
 
@@ -61,13 +66,13 @@ def read(editor, unknown):
             source = (fixture / f"{state}.py").read_bytes()
             self.assertEqual(hashlib.sha256(source).hexdigest(),
                              provenance["sources"][state]["fragment_sha256"])
-            outcome = measure_source(provenance["path"], source.decode())
+            outcome = CENSUS.read(provenance["path"], source.decode())
             self.assertIsInstance(outcome, Measured)
             tallies.append(outcome.tally)
         self.assertEqual([t[FamilyFlattened] for t in tallies], [0, 1])
         self.assertEqual((tallies[1] - tallies[0])[FamilyFlattened], 1)
         self.assertEqual((tallies[0] - tallies[1])[FamilyFlattened], -1)
-        self.assertEqual(tallies[1].as_record()["family_flattened"], 1)
+        self.assertEqual(tallies[1].as_record(Measure.members_with(NodeCount))["family_flattened"], 1)
 
         for body, count in (
             ("emit(member.declared_name)", 1),
@@ -79,7 +84,7 @@ def read(editor, unknown):
         ):
             with self.subTest(body=body):
                 source = "def carry(member, other):\n    " + body + "\n"
-                self.assertEqual(measure_source("source.py", source).tally[FamilyFlattened], count)
+                self.assertEqual(CENSUS.read("source.py", source).tally[FamilyFlattened], count)
 
     def test_family_identity_and_selector_from_real_history(self):
         fixture = Path(__file__).parent / "fixtures" / "wire-identity"
@@ -88,10 +93,10 @@ def read(editor, unknown):
             with self.subTest(revision=case["revision"], owner=case["class"]):
                 source = (fixture / case["fixture"]).read_text()
                 self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), case["sha256"])
-                measured = measure_source(case["path"], source)
+                measured = CENSUS.read(case["path"], source)
                 self.assertEqual(measured.tally[FamilyFlattened], case["expected"])
                 if case["fixture"] == "send-selector.py":
-                    sites = FamilyFlattened.occurrences(ast.parse(source))
+                    sites = FamilyFlattened.flattened(ast.parse(source))
                     self.assertEqual([ast.unparse(site) for site in sites], ["self.name == SEND_TOOL"])
 
     def test_identity_projection_is_not_string_redispatch(self):
@@ -107,18 +112,18 @@ class CodingCall:
         return this.tool.declared_name
 '''
             with self.subTest(decorator=decorator):
-                self.assertEqual(measure_source("arbitrary.py", source).tally[FamilyFlattened], 0)
+                self.assertEqual(CENSUS.read("arbitrary.py", source).tally[FamilyFlattened], 0)
                 compared = source + '''
 def execute(call):
     if call.name == SEND_TOOL:
         return "special behavior"
 '''
-                sites = FamilyFlattened.occurrences(ast.parse(compared))
+                sites = FamilyFlattened.flattened(ast.parse(compared))
                 self.assertEqual(len(sites), 1)
                 self.assertIsInstance(sites[0], ast.Compare)
-                self.assertEqual(measure_source("arbitrary.py", compared).tally[FamilyFlattened], 1)
+                self.assertEqual(CENSUS.read("arbitrary.py", compared).tally[FamilyFlattened], 1)
                 literal = compared.replace("call.name == SEND_TOOL", 'call.name == "comms_send"')
-                self.assertEqual(measure_source("arbitrary.py", literal).tally[FamilyFlattened], 1)
+                self.assertEqual(CENSUS.read("arbitrary.py", literal).tally[FamilyFlattened], 1)
 
     def test_projection_admission_does_not_hide_other_name_transport(self):
         for body, expected in (("return this.tool.declared_name", 0),
@@ -128,20 +133,20 @@ def execute(call):
                                ("emit(this.tool.declared_name)\\n        return this.tool.declared_name", 2)):
             with self.subTest(body=body):
                 source = "class Call:\n    @property\n    def name(this):\n        " + body.replace("\\n", "\n") + "\n"
-                self.assertEqual(measure_source("arbitrary.py", source).tally[FamilyFlattened], expected)
+                self.assertEqual(CENSUS.read("arbitrary.py", source).tally[FamilyFlattened], expected)
         shadowed = "property = factory\nclass Call:\n    @property\n    def name(this):\n        return this.tool.declared_name\n"
-        self.assertEqual(measure_source("arbitrary.py", shadowed).tally[FamilyFlattened], 1)
+        self.assertEqual(CENSUS.read("arbitrary.py", shadowed).tally[FamilyFlattened], 1)
         local = 'SEND_TOOL = "comms_send"\ndef read(SEND_TOOL, value):\n    return value == SEND_TOOL\n'
-        self.assertEqual(measure_source("arbitrary.py", local).tally[FamilyFlattened], 0)
+        self.assertEqual(CENSUS.read("arbitrary.py", local).tally[FamilyFlattened], 0)
         numeric = 'LIMIT = 10\ndef read(value):\n    return value == LIMIT\n'
-        self.assertEqual(measure_source("arbitrary.py", numeric).tally[FamilyFlattened], 0)
+        self.assertEqual(CENSUS.read("arbitrary.py", numeric).tally[FamilyFlattened], 0)
         for expression in ('namespace["declared_name"] == ""',
                            'value.declared_name == ""',
                            'value.name != expected_name',
                            'SEND_TOOL == "comms_send"'):
             with self.subTest(validation=expression):
                 source = 'SEND_TOOL = "comms_send"\ndef validate(value, namespace, expected_name):\n    return ' + expression + '\n'
-                self.assertEqual(measure_source("arbitrary.py", source).tally[FamilyFlattened], 0)
+                self.assertEqual(CENSUS.read("arbitrary.py", source).tally[FamilyFlattened], 0)
 
     def test_builtin_handler_family_tracks_real_421_growth_and_boundary(self):
         fixture = Path(__file__).parent / "fixtures" / "pr421"
@@ -151,7 +156,7 @@ def execute(call):
             source = (fixture / f"{state}.py").read_bytes()
             self.assertEqual(hashlib.sha256(source).hexdigest(),
                              provenance["sources"][state]["sha256"])
-            measured = measure_source(provenance["sources"][state]["path"], source.decode())
+            measured = CENSUS.read(provenance["sources"][state]["path"], source.decode())
             self.assertIsInstance(measured, Measured)
             tallies.append(measured.tally)
         self.assertEqual([t[BuiltinHandlerTypeSwitch] for t in tallies], [0, 6])
@@ -166,14 +171,16 @@ class Decode(MroDispatch):
     @cases(DomainRecord, ast.Dict)
     async def domain(self, value): pass
 '''
-        for path, count in (("src/pkg/presentation.py", 7),
-                            ("src/pkg/field_codec.py", 0),
-                            ("src/pkg/presentation_codec.py", 7)):
-            with self.subTest(path=path):
-                self.assertEqual(measure_source(path, source).tally[BuiltinHandlerTypeSwitch], count)
+        declared = CensusRun(Repository(SCRIPTS), FixtureProject(SCRIPTS, "src/pkg"))
+        for census, path, count in ((CENSUS, "src/pkg/field_codec.py", 7),
+                                    (declared, "src/pkg/presentation.py", 7),
+                                    (declared, "src/pkg/field_codec.py", 0),
+                                    (declared, "src/pkg/presentation_codec.py", 7)):
+            with self.subTest(owners=census.owners, path=path):
+                self.assertEqual(census.read(path, source).tally[BuiltinHandlerTypeSwitch], count)
         shadowed = source.replace('class Decode', 'dict = DomainRecord\nclass Decode')
         shadowed = shadowed.replace('native.dict', 'dict')
-        self.assertEqual(measure_source("source.py", shadowed).tally[BuiltinHandlerTypeSwitch], 6)
+        self.assertEqual(CENSUS.read("source.py", shadowed).tally[BuiltinHandlerTypeSwitch], 6)
         split = '''from .mro_dispatch import handles
 class Consumer(MroDispatch):
     @handles(dict)
@@ -183,15 +190,15 @@ class Consumer(MroDispatch):
     @handles(str)
     def three(self, value): pass
 '''
-        self.assertEqual(measure_source("source.py", split).tally[BuiltinHandlerTypeSwitch], 3)
-        self.assertEqual(measure_source("source.py", split.replace('@handles(str)', '@handles(tuple)')).tally[BuiltinHandlerTypeSwitch], 3)
-        self.assertEqual(measure_source("source.py", split.replace('@handles(str)', '@handles(str, tuple)')).tally[BuiltinHandlerTypeSwitch], 4)
+        self.assertEqual(CENSUS.read("source.py", split).tally[BuiltinHandlerTypeSwitch], 3)
+        self.assertEqual(CENSUS.read("source.py", split.replace('@handles(str)', '@handles(tuple)')).tally[BuiltinHandlerTypeSwitch], 3)
+        self.assertEqual(CENSUS.read("source.py", split.replace('@handles(str)', '@handles(str, tuple)')).tally[BuiltinHandlerTypeSwitch], 4)
 
     def test_dispatch_families_track_growth_removal_and_scope(self):
         for subjects, arms, is_type in ((StringDispatch, StringDispatchArms, False),
                                         (TypeSwitch, TypeSwitchArms, True)):
             with self.subTest(family=subjects.family_name):
-                outcomes = [measure_source("example.py", source_for(n, type_switch=is_type))
+                outcomes = [CENSUS.read("example.py", source_for(n, type_switch=is_type))
                             for n in (2, 3, 4)]
                 for outcome in outcomes:
                     self.assertIsInstance(outcome, Measured)
@@ -201,10 +208,10 @@ class Consumer(MroDispatch):
                 self.assertEqual((tallies[2] - tallies[1])[arms], 1)
                 self.assertEqual((tallies[0] - tallies[2])[arms], -4)
                 repeated = source_for(3, type_switch=is_type) + source_for(1, type_switch=is_type).split("\n", 1)[1]
-                self.assertEqual(measure_source("repeated.py", repeated).tally[arms], 3)
+                self.assertEqual(CENSUS.read("repeated.py", repeated).tally[arms], 3)
                 nested = ("def outer(subject):\n    if subject == 'outer': return True\n" +
                           "    " + source_for(3, type_switch=is_type).replace("\n", "\n    ").rstrip() + "\n")
-                measured = measure_source("nested.py", nested)
+                measured = CENSUS.read("nested.py", nested)
                 self.assertIsInstance(measured, Measured)
                 self.assertEqual(measured.tally[subjects], 1)
                 self.assertEqual(measured.tally[arms], 3)
@@ -261,7 +268,7 @@ class Consumer(MroDispatch):
                 git("commit", "-qm", "Change specimen")
                 git("checkout", "-q", "--detach", base)
                 git("merge", "--no-ff", "-qm", "Merge pull request #1 from test/feature", "feature")
-                review = MergeReview.of(Repository(path), "HEAD", 0, "Test", "pkg")
+                review = MergeReview.of(CensusRun(Repository(path), Undeclared()), "HEAD", 0, "Test", "pkg")
                 result = subprocess.run([sys.executable, str(SCRIPTS / "merge_review.py"),
                                          "--repo", directory, "--root", "pkg", "--since", base, "--rev", "HEAD"],
                                         capture_output=True, text=True, env=env)
