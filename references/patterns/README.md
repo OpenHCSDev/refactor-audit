@@ -5,6 +5,7 @@ Every antipattern here was found in real agent-written code (agent-comms, and a 
 ## Contents
 
 - [How to read an entry](#how-to-read-an-entry)
+- [Fact kinds](#fact-kinds)
 - [The rungs](#the-rungs)
 - [Index of patterns](#index-of-patterns)
 - Files: [implementation.md](implementation.md) · [membership.md](membership.md) · [identity.md](identity.md) · [boundaries.md](boundaries.md) · [over-time.md](over-time.md) · [agent-defaults.md](agent-defaults.md)
@@ -13,11 +14,21 @@ Every antipattern here was found in real agent-written code (agent-comms, and a 
 
 Each entry has the same parts:
 
+- **Restates:** the [fact kind](#fact-kinds) the slop restates.
 - **The slop:** real code, trimmed. This is what an agent writes when nothing stops it.
 - **What the code makes you know:** the fact a reader or maintainer must supply because no declaration states it. That missing declaration is the debt: it is a required answer maintained outside the mechanism.
 - **The clean form:** the owned structure, using the shared abstractions (`DeclaredFamily`, `FieldCodec`, `LifecycleState`, `MroDispatch`, `Command`, `TypedTable`, capability mixins).
 - **What collapses:** how many edits a new case needs before and after. That count is what separates factoring from relocation.
 - **Detected by:** the overlay category, NRA detector, or grep that finds it.
+
+## Fact kinds
+
+Slop is code restating a required fact that a complete mechanism derives once from its declaration. Each entry's **Restates:** line names the kind of that fact. Fact kinds are not the rungs below: a rung says where a mechanism broke, a fact kind says what the slop restates. Cite an entry by its ID; its fact kind is read from here.
+
+- **identity:** which meaning this is
+- **membership:** which contract or set it belongs to
+- **implementation:** which implementation it gets
+- **state:** a second writable copy of one value
 
 ## The rungs
 

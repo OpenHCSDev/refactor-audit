@@ -10,6 +10,8 @@ IDEN-1 One field answering two questions · IDEN-2 One name with several meaning
 
 ## IDEN-1 One field answering two questions
 
+**Restates:** identity
+
 **Seen in:** agent-comms' thread registry: `owner_epoch` is bumped when ownership changes **and** on every turn claim.
 
 ```python
@@ -41,6 +43,8 @@ class TurnIdentity:
 
 ## IDEN-2 One name with several meanings
 
+**Restates:** identity
+
 **Seen in:** agent-comms: "claim" meant wake attention, resource ownership, and turn claiming; "settled" named two different events in two protocols.
 
 ```python
@@ -65,6 +69,8 @@ class TurnSettled(OutboundUpdate):              # the subscriber-facing event
 ---
 
 ## IDEN-3 One concept, several encodings
+
+**Restates:** identity
 
 **Seen in:** a Toad status line: "this source could not be read" is a boolean for one source, `None` for another, and a status string for a third.
 
@@ -106,6 +112,8 @@ attention = any(s.needs_attention for s in sources.values())
 
 ## IDEN-4 A name that disagrees with its value
 
+**Restates:** identity
+
 **Seen in:** the same Toad snippet.
 
 ```python
@@ -120,6 +128,8 @@ attention = activity.unavailable      # named for one question, holding the answ
 ---
 
 ## IDEN-5 One fact split across stores
+
+**Restates:** state
 
 **Seen in:** agent-comms' goals: whether a goal is paused lives on the goal; who paused it lives in another file, joined by revision.
 
@@ -144,6 +154,8 @@ class PausedGoal(GoalState):
 
 ## IDEN-6 Keyed by the wrong identity
 
+**Restates:** identity
+
 **Seen in:** agent-comms' read markers: watermarks keyed by *view* (viewer, channel, mode, participant basis).
 
 ```python
@@ -167,6 +179,8 @@ class ReadLedger:
 
 ## IDEN-7 A check wider than the question
 
+**Restates:** identity
+
 **Seen in:** agent-comms' DM read acknowledgement.
 
 ```python
@@ -187,6 +201,8 @@ if (proof.viewer, proof.peer) != (current.viewer, current.peer):   # ThreadIncar
 ---
 
 ## IDEN-8 A bare process ID as identity
+
+**Restates:** identity
 
 **Seen in:** agent-comms' owner processes: launched, recorded as `pid=process.pid`, and later probed and signalled by that number alone.
 
