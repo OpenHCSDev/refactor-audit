@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .project import Project
 from .ratchet import (Advisory, BaseSide, Compared, Counts, FileCount, HeadSide, InventoryMeasure,
-                      MeasureCount, MemberCount, Side, Site, processors)
+                      MeasureCount, MemberCount, P, Side, Site, processors)
 from .repository import ChangedPaths
 
 
@@ -35,7 +35,7 @@ class CheckerSite(Site):
         return f"{super().text()} ({self.message})"
 
 
-class SideCounts(Compared):
+class SideCounts(Compared[P]):
     """Findings counted per subject on each side, summed over the measure's parts. Each part
     answers its side and the findings it took there."""
 
@@ -53,7 +53,7 @@ class SideCounts(Compared):
         return found
 
     @classmethod
-    def combine(cls, results: list, repo: Project, base: str, head: str, changed: set[str],
+    def combine(cls, results: list, repo: P, base: str, head: str, changed: set[str],
                 root: str) -> tuple[Counts, Counts]:
         found = {side: Counter(site.path for site in sites)
                  for side, sites in cls.taken(results).items()}
