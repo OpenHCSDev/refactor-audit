@@ -124,17 +124,12 @@ class CheckedRevision(SideCounts):
         (tree / cls.configured).write_bytes(repo.contents(ref, cls.configured))
 
     @classmethod
-    def inputs(cls, repo: Project, ref: str, head: str, root: str, selected: list[str]) -> str:
-        """What the findings on the selected files depend on: the revision's whole tree, which
-        a checker following imports reads, and the head's configuration."""
-        return f"{repo.tree(ref)} {cls.configuration(repo, head)}"
-
-    @classmethod
     def findings(cls, repo: Project, ref: str, head: str, root: str, selected: list[str],
                  side: type[Side]) -> tuple[type[Side], tuple[CheckerSite, ...]]:
-        return side, repo.memo(
-            partial(cls.checked, repo, ref, head, root, selected, side),
-            cls.__name__, root, cls.inputs(repo, ref, head, root, selected), *selected)
+        """Each comparison runs the checker. A checker that reads installed packages (mypy)
+        depends on more than the committed tree, so its findings are never stored by content;
+        the checker's own cache tracks those inputs."""
+        return side, cls.checked(repo, ref, head, root, selected, side)
 
     @classmethod
     def checked(cls, repo: Project, ref: str, head: str, root: str, selected: list[str],
@@ -234,6 +229,21 @@ class LintFindings(Advisory, CheckedRevision):
     @staticmethod
     def command(repo: Project, tree: Path, selected: list[str], side: type[Side]) -> list[str]:
         return ["ruff", "check", "--no-cache", "--output-format", "concise", *selected]
+
+    @classmethod
+    def inputs(cls, repo: Project, ref: str, head: str, root: str, selected: list[str]) -> str:
+        """What Ruff's findings on the selected files depend on: the revision's tree and the
+        head's configuration, and nothing installed."""
+        return f"{repo.tree(ref)} {cls.configuration(repo, head)}"
+
+    @classmethod
+    def findings(cls, repo: Project, ref: str, head: str, root: str, selected: list[str],
+                 side: type[Side]) -> tuple[type[Side], tuple[CheckerSite, ...]]:
+        """Ruff reads only the revision's tree and the head's configuration, so its findings
+        are stored under them."""
+        return side, repo.memo(
+            partial(cls.checked, repo, ref, head, root, selected, side),
+            cls.__name__, root, cls.inputs(repo, ref, head, root, selected), *selected)
 
 
 class TypeErrors(CheckedRevision):
