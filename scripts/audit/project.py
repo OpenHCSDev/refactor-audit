@@ -53,6 +53,9 @@ class StoredFormat:
     # The JSON Schema keywords whose value is record data, not a schema: kept as written, so a
     # default holding a `required` key is never read as one.
     data: typing.ClassVar[frozenset[str]] = frozenset({"default", "enum", "const"})
+    # The JSON Schema keywords listing alternatives: a value valid under any one of them is
+    # valid, so a format listing more alternatives still reads every earlier record.
+    alternatives: typing.ClassVar[frozenset[str]] = frozenset({"oneOf", "anyOf"})
 
     @classmethod
     def declared(cls, version: int, fields: dict[object, object],
@@ -80,6 +83,26 @@ class StoredFormat:
             case list():
                 return [cls.unordered(item) for item in schema]
         return schema
+
+    def widens(self, earlier: StoredFormat) -> bool:
+        """Every record the earlier format stored is one this format still reads: the same
+        stored and required keys, each field's schema the same except for alternatives it
+        added. Files on disk then hold nothing a carry could rewrite."""
+        return (self.required == earlier.required and self.fields.keys() == earlier.fields.keys()
+                and all(self.accepts(self.fields[name], schema)
+                        for name, schema in earlier.fields.items()))
+
+    @classmethod
+    def accepts(cls, later: object, earlier: object) -> bool:
+        """Whether a value valid under the earlier schema is valid under the later one, read
+        conservatively: only added alternatives widen; any other difference does not."""
+        match later, earlier:
+            case dict(), dict() if later.keys() == earlier.keys():
+                return all(
+                    all(option in later[key] for option in earlier[key]) if key in cls.alternatives
+                    else cls.accepts(later[key], earlier[key])
+                    for key in earlier)
+        return later == earlier
 
     def wire(self) -> dict[str, object]:
         """The JSON a reader prints, which declared(**wire) decodes. JSON has no set, so the
