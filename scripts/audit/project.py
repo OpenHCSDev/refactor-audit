@@ -19,7 +19,7 @@ import time
 import types
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,9 +37,44 @@ class StoredFormat:
 
     version: int
     fields: dict[object, object]
+    """Each stored key's JSON schema, where every nested `required` list is sorted: two
+    schemas are equal exactly when they require the same keys."""
     required: frozenset[str]
     """The keys every record carries: a set, because declaring a field in a parent class
     reorders a schema's list without changing what is written."""
+
+    # The JSON Schema keywords whose value maps names to schemas, so its keys are names and
+    # never the `required` keyword.
+    named: typing.ClassVar[frozenset[str]] = frozenset({"properties", "patternProperties", "$defs"})
+
+    @classmethod
+    def declared(cls, version: int, fields: dict[object, object],
+                 required: Iterable[str]) -> StoredFormat:
+        """The format a writer declares, and the one decoder of its wire form: every `required`
+        list in it is put in one order, so a field moved into a parent class is the same format."""
+        return cls(version, cls.names(fields), frozenset(required))
+
+    @classmethod
+    def names(cls, schemas: dict[object, object]) -> dict[object, object]:
+        """A map from names to schemas, each schema's `required` lists sorted."""
+        return {name: cls.unordered(schema) for name, schema in schemas.items()}
+
+    @classmethod
+    def unordered(cls, schema: object) -> object:
+        """The schema with each `required` list sorted."""
+        match schema:
+            case dict():
+                return {key: sorted(value) if key == "required"
+                        else cls.names(value) if key in cls.named else cls.unordered(value)
+                        for key, value in schema.items()}
+            case list():
+                return [cls.unordered(item) for item in schema]
+        return schema
+
+    def wire(self) -> dict[str, object]:
+        """The JSON a reader prints, which declared(**wire) decodes. JSON has no set, so the
+        required keys travel as a sorted list."""
+        return {"version": self.version, "fields": self.fields, "required": sorted(self.required)}
 
 
 @dataclass(frozen=True)

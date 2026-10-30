@@ -19,6 +19,7 @@ from audit.handler_declarations import BuiltinHandlerDeclarations
 from audit.identity import (ComparedKind, DeclaredSpellings, NamedAccess, NamedDeclaration,
                             OwnTypeTest, StringIdentity)
 from audit.measures import Measure
+from audit.project import StoredFormat
 from audit.ratchet import BaseSide, CleanChangedLines, Compared, Comparison, HeadSide, SyntaxPasses
 from audit.repository import ChangedPaths
 from audit.source_measures import (BannedVocabulary, BooleanChainTerms, BroadExceptDefault,
@@ -1475,3 +1476,20 @@ def test_an_abstract_intermediate_claims_no_name_and_the_syntax_runner_is_no_mea
     assert CleanChangedLines not in Measure.members()
     assert all(not inspect.isabstract(member) for member in Measure.members())
     assert not issubclass(SyntaxPasses, Measure)
+
+
+def test_a_stored_format_compares_required_keys_as_sets_at_every_depth():
+    """#3607: a field declared in a parent class reorders a nested schema's required list
+    without changing what is written; a changed set, or a field named `required`, is not
+    lost to that."""
+    row = {"type": "object", "properties": {"required": {"type": "string"}},
+           "required": ["name", "tags", "worktree", "created_at"]}
+    moved = {**row, "required": ["name", "created_at", "tags", "worktree"]}
+    stored = StoredFormat.declared(1, {"thread": {"type": "array", "items": row}}, ["thread"])
+    assert StoredFormat.declared(1, {"thread": {"type": "array", "items": moved}},
+                                 ["thread"]) == stored
+    assert StoredFormat.declared(1, {"thread": {**row, "required": ["name"]}},
+                                 ["thread"]) != stored
+    assert stored.fields == {"thread": {"type": "array", "items": {
+        **row, "required": ["created_at", "name", "tags", "worktree"]}}}
+    assert StoredFormat.declared(**json.loads(json.dumps(stored.wire()))) == stored
