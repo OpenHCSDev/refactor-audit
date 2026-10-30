@@ -37,7 +37,8 @@ class StoredFormat:
 
     version: int
     fields: dict[object, object]
-    """Each stored key's JSON schema, where every `required` list, at any depth, is a set."""
+    """Each stored key's JSON schema, where every nested `required` list is sorted: two
+    schemas are equal exactly when they require the same keys."""
     required: frozenset[str]
     """The keys every record carries: a set, because declaring a field in a parent class
     reorders a schema's list without changing what is written."""
@@ -50,20 +51,20 @@ class StoredFormat:
     def declared(cls, version: int, fields: dict[object, object],
                  required: Iterable[str]) -> StoredFormat:
         """The format a writer declares, and the one decoder of its wire form: every `required`
-        list in it becomes a set, so a field moved into a parent class is the same format."""
+        list in it is put in one order, so a field moved into a parent class is the same format."""
         return cls(version, cls.names(fields), frozenset(required))
 
     @classmethod
     def names(cls, schemas: dict[object, object]) -> dict[object, object]:
-        """A map from names to schemas, each schema's `required` lists made sets."""
+        """A map from names to schemas, each schema's `required` lists sorted."""
         return {name: cls.unordered(schema) for name, schema in schemas.items()}
 
     @classmethod
     def unordered(cls, schema: object) -> object:
-        """The schema with each `required` list made a set."""
+        """The schema with each `required` list sorted."""
         match schema:
             case dict():
-                return {key: frozenset(value) if key == "required"
+                return {key: sorted(value) if key == "required"
                         else cls.names(value) if key in cls.named else cls.unordered(value)
                         for key, value in schema.items()}
             case list():
@@ -71,22 +72,9 @@ class StoredFormat:
         return schema
 
     def wire(self) -> dict[str, object]:
-        """The JSON a reader prints, which declared(**wire) decodes. JSON has no set, so every
-        set travels as a sorted list."""
-        return {"version": self.version, "fields": self.listed(self.fields),
-                "required": sorted(self.required)}
-
-    @classmethod
-    def listed(cls, value: object) -> object:
-        """The value with every set written as a sorted list."""
-        match value:
-            case frozenset():
-                return sorted(value)
-            case dict():
-                return {key: cls.listed(item) for key, item in value.items()}
-            case list():
-                return [cls.listed(item) for item in value]
-        return value
+        """The JSON a reader prints, which declared(**wire) decodes. JSON has no set, so the
+        required keys travel as a sorted list."""
+        return {"version": self.version, "fields": self.fields, "required": sorted(self.required)}
 
 
 @dataclass(frozen=True)
