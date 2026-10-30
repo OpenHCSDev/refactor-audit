@@ -50,6 +50,9 @@ class StoredFormat:
     # renaming a type's description is never a format change.
     annotations: typing.ClassVar[frozenset[str]] = frozenset(
         {"description", "title", "examples", "$comment"})
+    # The JSON Schema keywords whose value is record data, not a schema: kept as written, so a
+    # default holding a `required` key is never read as one.
+    data: typing.ClassVar[frozenset[str]] = frozenset({"default", "enum", "const"})
 
     @classmethod
     def declared(cls, version: int, fields: dict[object, object],
@@ -66,10 +69,12 @@ class StoredFormat:
 
     @classmethod
     def unordered(cls, schema: object) -> object:
-        """The schema with each `required` list sorted and its annotations dropped."""
+        """The schema with each `required` list sorted and its annotations dropped; data
+        values (default, enum, const) are kept as written."""
         match schema:
             case dict():
-                return {key: sorted(value) if key == "required"
+                return {key: value if key in cls.data
+                        else sorted(value) if key == "required"
                         else cls.names(value) if key in cls.named else cls.unordered(value)
                         for key, value in schema.items() if key not in cls.annotations}
             case list():

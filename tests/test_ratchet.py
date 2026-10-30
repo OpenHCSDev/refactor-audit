@@ -1499,3 +1499,6 @@ def test_a_stored_format_compares_required_keys_as_sets_at_every_depth():
         "type": "object", "properties": {"required": {"type": "string"}},
         "required": ["created_at", "name", "tags", "worktree"]}}}
     assert StoredFormat.declared(**json.loads(json.dumps(stored.wire()))) == stored
+    defaulted = StoredFormat.declared(
+        1, {"row": {"type": "object", "default": {"required": ["b", "a"]}}}, ["row"])
+    assert defaulted.fields == {"row": {"type": "object", "default": {"required": ["b", "a"]}}}
