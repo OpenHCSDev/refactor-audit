@@ -73,6 +73,11 @@ class Repository:
         """Whether the revision holds the path."""
         return bool(self.identity(ref, path))
 
+    def has(self, commit: str) -> bool:
+        """Whether the clone holds the commit."""
+        listed = self._run("cat-file", "--batch-check=%(objecttype)", input=f"{commit}\n".encode())
+        return listed.split() == [b"commit"]
+
     def contents(self, ref: str, path: str) -> bytes:
         """The file at the revision, empty where the revision lacks it."""
         return self.blob(ref, path) if self.tracks(ref, path) else b""
