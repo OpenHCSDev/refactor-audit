@@ -46,27 +46,37 @@ class StoredFormat:
     # The JSON Schema keywords whose value maps names to schemas, so its keys are names and
     # never the `required` keyword.
     named: typing.ClassVar[frozenset[str]] = frozenset({"properties", "patternProperties", "$defs"})
+    # The JSON Schema keywords that document a schema without constraining what is written, so
+    # renaming a type's description is never a format change.
+    annotations: typing.ClassVar[frozenset[str]] = frozenset(
+        {"description", "title", "examples", "$comment"})
+    # The JSON Schema keywords whose value is record data, not a schema: kept as written, so a
+    # default holding a `required` key is never read as one.
+    data: typing.ClassVar[frozenset[str]] = frozenset({"default", "enum", "const"})
 
     @classmethod
     def declared(cls, version: int, fields: dict[object, object],
                  required: Iterable[str]) -> StoredFormat:
         """The format a writer declares, and the one decoder of its wire form: every `required`
-        list in it is put in one order, so a field moved into a parent class is the same format."""
+        list in it is put in one order and its documentation is dropped, so a field moved into a
+        parent class or a reworded description is the same format."""
         return cls(version, cls.names(fields), frozenset(required))
 
     @classmethod
     def names(cls, schemas: dict[object, object]) -> dict[object, object]:
-        """A map from names to schemas, each schema's `required` lists sorted."""
+        """A map from names to schemas, each schema written as unordered() writes it."""
         return {name: cls.unordered(schema) for name, schema in schemas.items()}
 
     @classmethod
     def unordered(cls, schema: object) -> object:
-        """The schema with each `required` list sorted."""
+        """The schema with each `required` list sorted and its annotations dropped; data
+        values (default, enum, const) are kept as written."""
         match schema:
             case dict():
-                return {key: sorted(value) if key == "required"
+                return {key: value if key in cls.data
+                        else sorted(value) if key == "required"
                         else cls.names(value) if key in cls.named else cls.unordered(value)
-                        for key, value in schema.items()}
+                        for key, value in schema.items() if key not in cls.annotations}
             case list():
                 return [cls.unordered(item) for item in schema]
         return schema

@@ -1480,9 +1480,11 @@ def test_an_abstract_intermediate_claims_no_name_and_the_syntax_runner_is_no_mea
 
 def test_a_stored_format_compares_required_keys_as_sets_at_every_depth():
     """#3607: a field declared in a parent class reorders a nested schema's required list
-    without changing what is written; a changed set, or a field named `required`, is not
-    lost to that."""
-    row = {"type": "object", "properties": {"required": {"type": "string"}},
+    without changing what is written, and P918's derived descriptions reword a schema's
+    documentation without changing it either; a changed set, or a field named `required`,
+    is not lost to that."""
+    row = {"type": "object",
+           "properties": {"required": {"type": "string", "description": "PathText text"}},
            "required": ["name", "tags", "worktree", "created_at"]}
     moved = {**row, "required": ["name", "created_at", "tags", "worktree"]}
     stored = StoredFormat.declared(1, {"thread": {"type": "array", "items": row}}, ["thread"])
@@ -1490,6 +1492,13 @@ def test_a_stored_format_compares_required_keys_as_sets_at_every_depth():
                                  ["thread"]) == stored
     assert StoredFormat.declared(1, {"thread": {**row, "required": ["name"]}},
                                  ["thread"]) != stored
+    reworded = {**row, "properties": {"required": {"type": "string", "description": "moved"}}}
+    assert StoredFormat.declared(1, {"thread": {"type": "array", "items": reworded}},
+                                 ["thread"]) == stored
     assert stored.fields == {"thread": {"type": "array", "items": {
-        **row, "required": ["created_at", "name", "tags", "worktree"]}}}
+        "type": "object", "properties": {"required": {"type": "string"}},
+        "required": ["created_at", "name", "tags", "worktree"]}}}
     assert StoredFormat.declared(**json.loads(json.dumps(stored.wire()))) == stored
+    defaulted = StoredFormat.declared(
+        1, {"row": {"type": "object", "default": {"required": ["b", "a"]}}}, ["row"])
+    assert defaulted.fields == {"row": {"type": "object", "default": {"required": ["b", "a"]}}}
