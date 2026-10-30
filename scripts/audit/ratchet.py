@@ -59,25 +59,30 @@ class HeadSide(Side):
         return head
 
 
+P = typing.TypeVar("P", bound=Project, contravariant=True, default=Project)
+"""The project a measure reads. A measure of any project measures a narrower one too, so a
+project-specific measure names its project and every other measure stays one of any."""
+
+
 def processors() -> int:
     """The processors this process may run on. The interpreter answers none when it cannot
     tell, and one is then all a comparison can count on."""
     return os.process_cpu_count() or 1
 
 
-class Runner(ABC):
+class Runner(ABC, typing.Generic[P]):
     """What a comparison runs: independent parts in the project's pool, combined into the
     counts at each revision. A measure runs itself unless a shared runner takes its counts."""
 
     @classmethod
     @abstractmethod
-    def parts(cls, repo: Project, base: str, head: str, changed: set[str],
+    def parts(cls, repo: P, base: str, head: str, changed: set[str],
               root: str) -> tuple[Callable[[], object], ...]:
         """Independent pieces of the comparison; compare() runs each in a separate process."""
 
     @classmethod
     @abstractmethod
-    def combine(cls, results: list, repo: Project, base: str, head: str, changed: set[str],
+    def combine(cls, results: list, repo: P, base: str, head: str, changed: set[str],
                 root: str) -> tuple[Counts, Counts]:
         """The before/after measurements from the results of parts(), in order."""
 
@@ -93,7 +98,7 @@ class Runner(ABC):
         return {}
 
 
-class Compared(Measure, Runner):
+class Compared(Measure, Runner[P]):
     """Capability: the ratchet compares this measure's counts at the two revisions of a change."""
 
     @classmethod
@@ -130,7 +135,7 @@ class Compared(Measure, Runner):
         return key.grew(grown)
 
     @classmethod
-    def run_by(cls) -> type[Runner]:
+    def run_by(cls) -> type[Runner[P]]:
         """What a comparison runs to take this measure's counts."""
         return cls
 
@@ -161,7 +166,9 @@ class MeasureCount:
     """What one reported count counts: here, a measure's total over the change. Its text is
     only the report's key; the comparison matches the record."""
 
-    measure: type[Compared]
+    measure: type[Compared[typing.Never]]
+    """Any measure: a count names its measure and never hands it a project, and a measure of
+    any project is a measure of the project no value is."""
 
     @property
     def text(self) -> str:
