@@ -17,7 +17,9 @@ class UncarriedRecordFormat(ChangeMeasure):
     Files in the old format stay on disk, so a change to a versioned record's stored form
     bumps its version, and a bumped version arrives with a new carry step that rewrites the
     old files. The stored form is what the project's writer stores, not the annotation text:
-    two representations with the same wire spelling are the same format.
+    two representations with the same wire spelling are the same format. A format that only
+    widens (an added union alternative, as a new member of a stored family) still reads every
+    file on disk, so it needs neither a version nor a carry.
     """
 
     @staticmethod
@@ -52,7 +54,8 @@ class UncarriedRecordFormat(ChangeMeasure):
         before = cls.formats(repo, base, root, changed)
         after = cls.formats(repo, head, root, changed)
         uncarried = sum(before[name].version == form.version or not carried
-                        for name, form in after.items() if name in before and before[name] != form)
+                        for name, form in after.items()
+                        if name in before and not form.widens(before[name]))
         return {cls.total(): 0}, {cls.total(): uncarried}
 
 
